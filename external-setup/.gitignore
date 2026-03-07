@@ -1,0 +1,6 @@
+./music/*
+./data/*
+./cache/*
+./logs/*
+./audiomuse/*
+.env

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>🎵 Загрузка музыки</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+      background-color: #111;
+      color: #f5f5f5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+      color: #ffce54;
+      text-shadow: 0 0 8px rgba(255,206,84,0.3);
+    }
+
+    form {
+      background-color: #1b1b1b;
+      border-radius: 16px;
+      padding: 2rem;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+      width: 90%;
+      max-width: 420px;
+      text-align: center;
+    }
+
+    input[type="file"] {
+      display: block;
+      margin: 1rem auto;
+      color: #ddd;
+    }
+
+    button {
+      background: linear-gradient(135deg, #ffce54, #f6b93b);
+      color: #111;
+      border: none;
+      padding: 0.6rem 1.5rem;
+      font-weight: bold;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      font-size: 1rem;
+    }
+
+    button:hover {
+      transform: scale(1.05);
+      background: linear-gradient(135deg, #ffd96b, #ffbb33);
+      box-shadow: 0 0 10px rgba(255,206,84,0.4);
+    }
+
+    #status {
+      margin-top: 1rem;
+      font-size: 1rem;
+      color: #ccc;
+      min-height: 1.5rem;
+    }
+
+    progress {
+      width: 100%;
+      height: 12px;
+      border-radius: 6px;
+      margin-top: 1rem;
+      appearance: none;
+    }
+
+    progress::-webkit-progress-bar {
+      background-color: #222;
+      border-radius: 6px;
+    }
+
+    progress::-webkit-progress-value {
+      background: linear-gradient(90deg, #ffce54, #f6b93b);
+      border-radius: 6px;
+    }
+
+    footer {
+      margin-top: 2rem;
+      font-size: 0.9rem;
+      color: #777;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎵 Загрузка музыки в Navidrome</h1>
+  <form id="uploadForm">
+    <input id="fileInput" name="file" type="file" multiple accept=".mp3,.flac,.wav,.ogg"><br>
+    <button type="submit">Загрузить файлы</button>
+    <progress id="progressBar" value="0" max="100" hidden></progress>
+    <div id="status"></div>
+  </form>
+
+  <footer>
+    <p>Файлы попадут в <code>music/All/All</code></p>
+  </footer>
+
+  <script>
+    const form = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+    const status = document.getElementById('status');
+    const progressBar = document.getElementById('progressBar');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const files = fileInput.files;
+      if (!files.length) {
+        status.textContent = '⚠️ Выберите хотя бы один файл';
+        return;
+      }
+
+      progressBar.hidden = false;
+      progressBar.value = 0;
+      status.textContent = '⏳ Загружаем...';
+
+      const formData = new FormData();
+      for (const f of files) {
+        formData.append('file', f);
+      }
+
+      try {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/upload', true);
+
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            progressBar.value = (event.loaded / event.total) * 100;
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            status.textContent = '✅ Загрузка завершена!';
+            progressBar.value = 100;
+            setTimeout(() => {
+              progressBar.hidden = true;
+            }, 1000);
+          } else {
+            status.textContent = '❌ Ошибка при загрузке';
+          }
+        };
+
+        xhr.onerror = () => {
+          status.textContent = '❌ Ошибка соединения';
+        };
+
+        xhr.send(formData);
+      } catch (err) {
+        status.textContent = '❌ Ошибка: ' + err.message;
+      }
+    });
+  </script>
+</body>
+</html>
