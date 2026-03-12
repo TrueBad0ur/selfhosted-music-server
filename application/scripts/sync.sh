@@ -1,10 +1,15 @@
 #!/bin/bash
 
-LOGFILE="/home/user/navidrome/external-setup/logs/s3_sync-$(date).log"
-RCLONE="/usr/bin/rclone"
-REMOTE="yandex"
-BUCKET="music-truebad0ur"
-SRC="/home/user/navidrome/external-setup/music/"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Local config (not in git) — copy sync.conf.example to sync.conf and edit
+CONF="$SCRIPT_DIR/sync.conf"
+if [ ! -f "$CONF" ]; then
+    echo "ERROR: $CONF not found. Copy sync.conf.example and fill in the values."
+    exit 1
+fi
+# shellcheck source=sync.conf
+source "$CONF"
 
 mkdir -p "$(dirname "$LOGFILE")"
 exec >> "$LOGFILE" 2>&1

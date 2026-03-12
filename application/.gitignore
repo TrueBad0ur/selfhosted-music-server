@@ -1,0 +1,7 @@
+music/
+data/
+cache/
+logs/
+audiomuse/
+.env
+sync.conf

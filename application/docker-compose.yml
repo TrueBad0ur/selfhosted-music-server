@@ -1,6 +1,61 @@
 version: "3.8"
 
 services:
+  navidrome:
+    image: deluan/navidrome:pr-5044
+    container_name: navidrome
+    user: "1000:1000"
+    restart: always
+    ports:
+      - "4533:4533"
+    volumes:
+      - ./data:/data
+      - ./music:/music:ro
+      - ./cache:/cache
+    environment:
+      ND_MUSICFOLDER: /music
+      ND_DATAFOLDER: /data
+      ND_LOGLEVEL: info
+      ND_CACHEFOLDER: /cache
+      ND_DEFAULTTHEME: Spotify-ish
+      ND_UIWELCOMEMESSAGE: "Welcome to music.kubehomelab.space"
+      ND_MUSICBRAINZ_ENABLED: "true"
+      ND_MUSICBRAINZ_SERVER: "https://musicbrainz.org"
+      ND_MUSICBRAINZ_COVERART_ENABLED: "true"
+      ND_MUSICBRAINZ_USERAGENT: "Navidrome/0.52 (https://music.kubehomelab.space)"
+      ND_PLUGINS_ENABLED: true
+      ND_PLUGINS_AUTORELOAD: true
+      ND_AGENTS: "audiomuseai,lastfm,spotify,deezer"
+      ND_DEVARTISTINFOTIMETOLIVE: "1s"
+      ND_LASTFM_ENABLED: "true"
+      ND_LASTFM_APIKEY: "${LASTFM_APIKEY}"
+      ND_LASTFM_SECRET: "${LASTFM_SECRET}"
+      ND_COVERARTPRIORITY: "folder,embedded,external"
+
+  #nginx:
+  #  image: nginx:latest
+  #  container_name: navidrome_nginx
+  #  restart: always
+  #  depends_on:
+  #    - navidrome
+  #  ports:
+  #    - "80:80"
+  #  volumes:
+  #    - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
+  uploader:
+    image: python:3.11-slim
+    container_name: navidrome_uploader
+    working_dir: /app
+    restart: always
+    user: "1000:1000"
+    volumes:
+      - ./uploader:/app
+      - ./music/All/All:/uploads
+    command: python3 /app/uploader.py
+    ports:
+      - "8091:8091"
+
   redis:
     image: redis:7-alpine
     container_name: audiomuse-redis
@@ -20,14 +75,14 @@ services:
     restart: unless-stopped
 
   audiomuse-flask:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest
+    build: ./audiomuse-patch
     container_name: audiomuse-ai-flask
     ports:
       - "8000:8000"
     environment:
       SERVICE_TYPE: "flask"
       MEDIASERVER_TYPE: "navidrome"
-      NAVIDROME_URL: "http://${NAVIDROME_HOST}:4533"
+      NAVIDROME_URL: "http://navidrome:4533"
       NAVIDROME_USER: "${NAVIDROME_USER}"
       NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
@@ -53,15 +108,16 @@ services:
     depends_on:
       - redis
       - postgres
+      - navidrome
     restart: unless-stopped
 
   audiomuse-worker:
-    image: ghcr.io/neptunehub/audiomuse-ai:latest
+    build: ./audiomuse-patch
     container_name: audiomuse-ai-worker
     environment:
       SERVICE_TYPE: "worker"
       MEDIASERVER_TYPE: "navidrome"
-      NAVIDROME_URL: "http://${NAVIDROME_HOST}:4533"
+      NAVIDROME_URL: "http://navidrome:4533"
       NAVIDROME_USER: "${NAVIDROME_USER}"
       NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
       POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
@@ -87,4 +143,5 @@ services:
     depends_on:
       - redis
       - postgres
+      - navidrome
     restart: unless-stopped

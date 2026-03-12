@@ -1,0 +1,5 @@
+LOGFILE="/home/user/navidrome/application/logs/s3_sync-$(date).log"
+RCLONE="/usr/bin/rclone"
+REMOTE="yandex"
+BUCKET="bucket-name"
+SRC="/home/user/navidrome/application/music/"
