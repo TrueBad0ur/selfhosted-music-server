@@ -625,35 +625,38 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
 _YEAR_DIR_PREFIX_RE = _re.compile(r'^\d{4}(\s*\[\d{4}\])?\s*[-\.]\s*')
 
 def clean_album_dirname(name: str) -> str:
-    """Strip year prefix and trailing release metadata from album directory names.
+    """Strip year prefix and all trailing parenthetical groups from album directory names.
 
-    '2005 - Перевал'                                     → 'Перевал'
-    '2003 [2013] - Дорога сна'                          → 'Дорога сна'
-    '1988 - Князь Тишины (2013, Bomba Music, Germany)'  → 'Князь Тишины'
-    '1995 - Крылья (2013, Bomba Music) - 2LP'           → 'Крылья'
-    '2015 - Алхимия [Deluxe Special Edition]'           → 'Алхимия [Deluxe Special Edition]'
-    '2004. Черновики (Александр Васильев)'              → 'Черновики (Александр Васильев)'
-    '1994. Пыльная быль (2002)'                         → 'Пыльная быль'
+    '2005 - Перевал'                                                         → 'Перевал'
+    '2003 [2013] - Дорога сна'                                               → 'Дорога сна'
+    '2022 - Бордерлайн (deluxe edition)'                                     → 'Бордерлайн'
+    '1988 - Князь Тишины (2013, Bomba Music, Germany)'                       → 'Князь Тишины'
+    '1995 - Крылья (2013, Bomba Music) - 2LP'                                → 'Крылья'
+    '1999 - Серебряный Век (Лучшие Песни 1991-1997) (Компиляция, Dana, RUS)' → 'Серебряный Век'
+    '2004. Черновики (Александр Васильев)'                                   → 'Черновики'
+    '1994. Пыльная быль (2002)'                                              → 'Пыльная быль'
+    '2004 - 2013'                                                            → '2004 - 2013' (unchanged)
     """
     s = _YEAR_DIR_PREFIX_RE.sub('', name)
 
-    # Repeatedly strip trailing parens/brackets that are release metadata:
-    # - starts with a year (e.g. "(2013, Bomba Music...)" or "(2014. Переиздание)")
-    # - contains commas (label / catalog / country list, e.g. "(Компиляция, Dana Music, RUS)")
+    # If the whole name was a year-range (e.g. "2004 - 2013"), leave it unchanged
+    if not s.strip() or _re.fullmatch(r'\d{4}(\s*[-–]\s*\d{4})?', s.strip()):
+        return name
+
+    # Strip ALL trailing paren/bracket groups
     changed = True
     while changed:
         changed = False
-        m = _re.search(r'\s*[\(\[]([^\(\)\[\]]*)[\)\]]\s*$', s)
+        m = _re.search(r'\s*[\(\[][^\(\)\[\]]*[\)\]]\s*$', s)
         if m:
-            content = m.group(1)
-            if _re.match(r'^\d{4}', content) or ',' in content:
-                s = s[:m.start()].rstrip()
-                changed = True
+            s = s[:m.start()].rstrip()
+            changed = True
 
     # Strip trailing disc suffix: " - 2LP", " - 2CD", " - 2xCD"
     s = _re.sub(r'\s*-\s*\d+[xX]?(LP|CD|EP)\s*$', '', s, flags=_re.IGNORECASE)
 
-    return s.strip()
+    s = s.strip()
+    return s if s else name
 
 
 def scan_dirs(root: Path, fix: bool) -> int:
