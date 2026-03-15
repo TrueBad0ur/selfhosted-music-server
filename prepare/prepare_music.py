@@ -29,7 +29,7 @@ except ImportError:
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".ape", ".wav", ".m4b"}
 
 # Directories to skip for album/albumartist enforcement — flat dumps without Artist/Album structure
-EXCLUDE_DIRS = {"All", "Garazh", "ReverseDungeon", "Classics", "TexnoFunk"}
+EXCLUDE_DIRS = {"All", "All-Rap", "Garazh", "ReverseDungeon", "Classics", "TexnoFunk"}
 
 def is_excluded(path: Path) -> bool:
     return any(part in EXCLUDE_DIRS for part in path.parts)

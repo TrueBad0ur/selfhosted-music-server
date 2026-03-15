@@ -292,12 +292,20 @@ docker compose build --no-cache && docker compose run --rm prepare /music
 
 ### Directory structure for album/albumartist detection
 
-The script enforces tags from the path:
 ```
-music/Artist/Album/track.mp3  →  album=Album, albumartist=Artist
+music/
+├── Artist/
+│   └── Album/
+│       └── track.mp3    →  album=Album, albumartist=Artist
+├── All/                 ← playlist folder
+├── All-Rap/             ← playlist folder
+├── Classics/            ← playlist folder
+├── Garazh/              ← playlist folder
+├── ReverseDungeon/      ← playlist folder
+└── TexnoFunk/           ← playlist folder
 ```
 
-Flat playlist folders (not enforced): `All`, `Garazh`, `ReverseDungeon`, `Classics`, `TexnoFunk` — tracks in these get `album` set to the folder name to avoid polluting real albums.
+Tracks in playlist folders get `album` forced to the folder name to avoid polluting real albums. To add more playlist folders edit `EXCLUDE_DIRS` in `prepare_music.py`.
 
 ---
 
