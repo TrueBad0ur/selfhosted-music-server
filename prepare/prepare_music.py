@@ -264,6 +264,10 @@ _JUNK_TXXX_DESCS = {
     "replaygain_album_peak",
 }
 
+# Non-standard vorbis comment keys in FLAC that shadow standard fields
+# "album artist" (with space) is non-standard — standard is "albumartist"
+_JUNK_FLAC_KEYS = {"album artist", "album_artist"}
+
 def _frame_text(frame) -> str:
     """Extract text content from an ID3 frame."""
     if hasattr(frame, "url"):
@@ -326,6 +330,16 @@ def check_id3_junk_frames(f) -> list:
         text = _frame_text(f.tags[key])
         if _WATERMARK_URL_RE.search(text):
             junk.append((key, text))
+    return junk
+
+def check_flac_junk_tags(f) -> list:
+    """Return list of (key, value) for non-standard vorbis comment keys to delete."""
+    if type(f).__name__ != "FLAC" or not f.tags:
+        return []
+    junk = []
+    for key in list(f.keys()):
+        if key.lower() in _JUNK_FLAC_KEYS:
+            junk.append((key, (f[key] or [""])[0]))
     return junk
 
 def strip_watermarks(s: str) -> str:
@@ -495,6 +509,19 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
         if fix:
             del f.tags[frame_key]
             applied.append(f"deleted junk frame [{frame_key}]")
+
+    # ── junk FLAC vorbis keys (non-standard "album artist" with space) ─────────
+    for flac_key, flac_val in check_flac_junk_tags(f):
+        short = flac_val[:60]
+        issues.append(f"junk vorbis key [{flac_key}]: '{short}'")
+        if fix:
+            # Migrate to standard key if albumartist is missing
+            has_standard = bool((f.get("albumartist") or [None])[0])
+            if not has_standard and flac_val:
+                f["albumartist"] = [flac_val]
+                applied.append(f"migrated [{flac_key}] → albumartist='{flac_val}'")
+            del f[flac_key]
+            applied.append(f"deleted junk vorbis key [{flac_key}]")
 
     # ── encoding ──────────────────────────────────────────────────────────────
     if check_enc:
