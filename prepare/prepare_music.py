@@ -643,6 +643,10 @@ def clean_album_dirname(name: str) -> str:
     if not s.strip() or _re.fullmatch(r'\d{4}(\s*[-–]\s*\d{4})?', s.strip()):
         return name
 
+    # Strip trailing disc suffix first so it doesn't block paren removal
+    # e.g. "Яблокитай (2022 RM, ...) - 2CD" → "Яблокитай (2022 RM, ...)"
+    s = _re.sub(r'\s*-\s*\d+[xX]?(LP|CD|EP)\s*$', '', s, flags=_re.IGNORECASE)
+
     # Strip ALL trailing paren/bracket groups
     changed = True
     while changed:
@@ -651,9 +655,6 @@ def clean_album_dirname(name: str) -> str:
         if m:
             s = s[:m.start()].rstrip()
             changed = True
-
-    # Strip trailing disc suffix: " - 2LP", " - 2CD", " - 2xCD"
-    s = _re.sub(r'\s*-\s*\d+[xX]?(LP|CD|EP)\s*$', '', s, flags=_re.IGNORECASE)
 
     s = s.strip()
     return s if s else name
