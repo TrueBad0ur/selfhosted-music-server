@@ -576,7 +576,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             correct_album = excluded_dir
             correct_albumartist = None
         else:
-            correct_album = strip_watermarks(strip_bad_chars(path.parent.name))
+            correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(path.parent.name)))
             correct_albumartist = path.parent.parent.name or None
 
         current_album = tags.get("album", "")
@@ -620,8 +620,76 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 except Exception as e:
                     print(f"      [ERROR] rename failed: {e}")
 
+# ── album directory name cleanup ──────────────────────────────────────────────
+
+_YEAR_DIR_PREFIX_RE = _re.compile(r'^\d{4}(\s*\[\d{4}\])?\s*[-\.]\s*')
+
+def clean_album_dirname(name: str) -> str:
+    """Strip year prefix and trailing release metadata from album directory names.
+
+    '2005 - Перевал'                                     → 'Перевал'
+    '2003 [2013] - Дорога сна'                          → 'Дорога сна'
+    '1988 - Князь Тишины (2013, Bomba Music, Germany)'  → 'Князь Тишины'
+    '1995 - Крылья (2013, Bomba Music) - 2LP'           → 'Крылья'
+    '2015 - Алхимия [Deluxe Special Edition]'           → 'Алхимия [Deluxe Special Edition]'
+    '2004. Черновики (Александр Васильев)'              → 'Черновики (Александр Васильев)'
+    '1994. Пыльная быль (2002)'                         → 'Пыльная быль'
+    """
+    s = _YEAR_DIR_PREFIX_RE.sub('', name)
+
+    # Repeatedly strip trailing parens/brackets that are release metadata:
+    # - starts with a year (e.g. "(2013, Bomba Music...)" or "(2014. Переиздание)")
+    # - contains commas (label / catalog / country list, e.g. "(Компиляция, Dana Music, RUS)")
+    changed = True
+    while changed:
+        changed = False
+        m = _re.search(r'\s*[\(\[]([^\(\)\[\]]*)[\)\]]\s*$', s)
+        if m:
+            content = m.group(1)
+            if _re.match(r'^\d{4}', content) or ',' in content:
+                s = s[:m.start()].rstrip()
+                changed = True
+
+    # Strip trailing disc suffix: " - 2LP", " - 2CD", " - 2xCD"
+    s = _re.sub(r'\s*-\s*\d+[xX]?(LP|CD|EP)\s*$', '', s, flags=_re.IGNORECASE)
+
+    return s.strip()
+
+
+def scan_dirs(root: Path, fix: bool) -> int:
+    """Report (and optionally rename) album directories with year prefixes or release junk.
+    Processes deepest directories first to avoid path invalidation."""
+    renames = []
+    for dirpath, _, _ in os.walk(root, topdown=False):
+        p = Path(dirpath)
+        if p == root or is_excluded(p):
+            continue
+        clean = clean_album_dirname(p.name)
+        if clean != p.name and clean:
+            renames.append((p, p.parent / clean))
+
+    for old, new in renames:
+        print(f"\n  dir: {old.relative_to(root)}")
+        print(f"      [!] '{old.name}' → '{new.name}'")
+        if fix:
+            if new.exists():
+                print(f"      [ERROR] target already exists, skipping")
+            else:
+                old.rename(new)
+                print(f"      [✓] renamed")
+
+    return len(renames)
+
+
 def scan(root: Path, fix: bool, check_enc: bool, check_art: bool, check_alb: bool):
     found = 0
+
+    if check_alb:
+        dir_count = scan_dirs(root, fix)
+        if dir_count:
+            print(f"\n{'─'*60}")
+            print(f"  Directories: {dir_count} {'renamed' if fix else 'to rename'}")
+            print(f"{'─'*60}\n")
 
     for dirpath, _, filenames in os.walk(root):
         for fname in sorted(filenames):
