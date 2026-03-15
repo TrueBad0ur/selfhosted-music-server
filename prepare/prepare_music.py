@@ -248,8 +248,6 @@ _WATERMARK_RE = _re.compile(r"\s*[\[\(][\w.-]+\.[a-zA-Z]{2,}[\]\)]", _re.IGNOREC
 # Matches http(s)://muzmo.ru, http://zaycev.net, etc. — URL-form watermarks in junk frames
 _WATERMARK_URL_RE = _re.compile(r"https?://[\w.-]+\.[\w]{2,}", _re.IGNORECASE)
 
-# ID3 frames deleted unconditionally (comments, lyrics — always spam/noise)
-_JUNK_FRAME_KEYS_ALWAYS = {"COMM", "USLT"}
 # ID3 frames deleted only if they contain a watermark URL
 _JUNK_FRAME_KEYS = {"WXXX", "TCOP"}
 
@@ -275,6 +273,36 @@ def _frame_text(frame) -> str:
         return str(t[0]) if isinstance(t, list) else str(t)
     return str(frame)
 
+_SPAM_COMMENT_RE = _re.compile(
+    r"(^collected\s+by\b"           # "Collected by LeXiKC"
+    r"|@[\w.-]+\.\w{2,}"            # email address
+    r"|www\."                        # www. domain
+    r"|^[\s0-9a-fA-F]{20,}$"        # hex/numeric garbage (iTunNORM, ReplayGain)
+    r"|ya\s*music\b"                 # YA Music app
+    r"|itunes\b"                     # iTunes
+    r"|только\s+для\s+ознакомления"  # "for review only" in Russian (often mojibake too)
+    r")",
+    _re.IGNORECASE,
+)
+
+def _is_spam_comment(text: str) -> bool:
+    """Return True if a COMM frame text looks like spam/ads rather than real metadata."""
+    t = text.strip()
+    if not t:
+        return True
+    # Check decoded mojibake too
+    decoded = t
+    try:
+        decoded = t.encode("latin-1").decode("cp1251")
+    except Exception:
+        pass
+    for s in (t, decoded):
+        if _SPAM_COMMENT_RE.search(s):
+            return True
+        if _WATERMARK_URL_RE.search(s):
+            return True
+    return False
+
 def check_id3_junk_frames(f) -> list:
     """Return list of (key, reason) to delete: watermark URL frames and rogue TXXX tags."""
     if type(f).__name__ != "MP3" or not f.tags:
@@ -288,8 +316,10 @@ def check_id3_junk_frames(f) -> list:
             if desc in _JUNK_TXXX_DESCS:
                 junk.append((key, _frame_text(f.tags[key])))
             continue
-        if frame_type in _JUNK_FRAME_KEYS_ALWAYS:
-            junk.append((key, _frame_text(f.tags[key])))
+        if frame_type == "COMM":
+            text = _frame_text(f.tags[key])
+            if _is_spam_comment(text):
+                junk.append((key, text))
             continue
         if frame_type not in _JUNK_FRAME_KEYS:
             continue
