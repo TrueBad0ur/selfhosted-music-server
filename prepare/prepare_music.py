@@ -248,8 +248,23 @@ _WATERMARK_RE = _re.compile(r"\s*[\[\(][\w.-]+\.[a-zA-Z]{2,}[\]\)]", _re.IGNOREC
 # Matches http(s)://muzmo.ru, http://zaycev.net, etc. — URL-form watermarks in junk frames
 _WATERMARK_URL_RE = _re.compile(r"https?://[\w.-]+\.[\w]{2,}", _re.IGNORECASE)
 
-# ID3 frames that are purely spam — delete if they contain a watermark URL
-_JUNK_FRAME_KEYS = {"WXXX", "TCOP", "COMM", "USLT"}
+# ID3 frames deleted unconditionally (comments, lyrics — always spam/noise)
+_JUNK_FRAME_KEYS_ALWAYS = {"COMM", "USLT"}
+# ID3 frames deleted only if they contain a watermark URL
+_JUNK_FRAME_KEYS = {"WXXX", "TCOP"}
+
+# TXXX frame descriptions that shadow standard tags and confuse players/servers
+_JUNK_TXXX_DESCS = {
+    "album artist",
+    "albumartist",
+    "album_artist",
+    "totaltracks",
+    "totaldiscs",
+    "replaygain_track_gain",
+    "replaygain_track_peak",
+    "replaygain_album_gain",
+    "replaygain_album_peak",
+}
 
 def _frame_text(frame) -> str:
     """Extract text content from an ID3 frame."""
@@ -261,12 +276,21 @@ def _frame_text(frame) -> str:
     return str(frame)
 
 def check_id3_junk_frames(f) -> list:
-    """Return list of frame keys to delete (junk URL/watermark frames)."""
+    """Return list of (key, reason) to delete: watermark URL frames and rogue TXXX tags."""
     if type(f).__name__ != "MP3" or not f.tags:
         return []
     junk = []
     for key in list(f.tags.keys()):
         frame_type = key.split(":")[0]
+        # TXXX frames whose description shadows a standard tag
+        if frame_type == "TXXX":
+            desc = key[5:].lower() if key.startswith("TXXX:") else ""
+            if desc in _JUNK_TXXX_DESCS:
+                junk.append((key, _frame_text(f.tags[key])))
+            continue
+        if frame_type in _JUNK_FRAME_KEYS_ALWAYS:
+            junk.append((key, _frame_text(f.tags[key])))
+            continue
         if frame_type not in _JUNK_FRAME_KEYS:
             continue
         text = _frame_text(f.tags[key])
