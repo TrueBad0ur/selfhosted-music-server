@@ -251,6 +251,11 @@ _WATERMARK_URL_RE = _re.compile(r"https?://[\w.-]+\.[\w]{2,}", _re.IGNORECASE)
 # ID3 frames deleted only if they contain a watermark URL
 _JUNK_FRAME_KEYS = {"WXXX", "TCOP"}
 
+# Known spam cover art hashes (MD5) — e.g. muzmo.ru banner embedded as APIC
+_SPAM_COVER_MD5 = {
+    "dfb57101e4ec83f5cae72bc0f28d155f",  # muzmo.ru 85873-byte banner
+}
+
 # TXXX frame descriptions that shadow standard tags and confuse players/servers
 _JUNK_TXXX_DESCS = {
     "album artist",
@@ -331,6 +336,34 @@ def check_id3_junk_frames(f) -> list:
         if _WATERMARK_URL_RE.search(text):
             junk.append((key, text))
     return junk
+
+def check_spam_covers(f) -> list:
+    """Return list of keys/indices to delete for known spam cover art (by MD5 hash).
+    Returns list of frame keys (MP3) or 'FLAC_PIC:{i}' / 'MP4_COVER:{i}' sentinels."""
+    import hashlib
+    t = type(f).__name__
+    junk = []
+
+    if t == "MP3" and f.tags:
+        for key in list(f.tags.keys()):
+            if key.startswith("APIC"):
+                data = f.tags[key].data
+                if hashlib.md5(data).hexdigest() in _SPAM_COVER_MD5:
+                    junk.append(("MP3_APIC", key, len(data)))
+
+    elif t == "FLAC":
+        for i, pic in enumerate(f.pictures):
+            if hashlib.md5(pic.data).hexdigest() in _SPAM_COVER_MD5:
+                junk.append(("FLAC_PIC", i, len(pic.data)))
+
+    elif t == "MP4" and f.tags:
+        covers = f.tags.get("covr", [])
+        for i, c in enumerate(covers):
+            if hashlib.md5(bytes(c)).hexdigest() in _SPAM_COVER_MD5:
+                junk.append(("MP4_COVER", i, len(bytes(c))))
+
+    return junk
+
 
 def check_flac_junk_tags(f) -> list:
     """Return list of (key, value) for non-standard vorbis comment keys to delete."""
@@ -522,6 +555,25 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 applied.append(f"migrated [{flac_key}] → albumartist='{flac_val}'")
             del f[flac_key]
             applied.append(f"deleted junk vorbis key [{flac_key}]")
+
+    # ── spam cover art (known watermark images by MD5) ────────────────────────
+    for kind, ref, size in check_spam_covers(f):
+        issues.append(f"spam cover [{ref}]: {size} bytes")
+        if fix:
+            if kind == "MP3_APIC":
+                del f.tags[ref]
+                applied.append(f"deleted spam cover [{ref}]")
+            elif kind == "FLAC_PIC":
+                pics = [p for i, p in enumerate(f.pictures) if i != ref]
+                f.clear_pictures()
+                for p in pics:
+                    f.add_picture(p)
+                applied.append(f"deleted spam cover [picture #{ref}]")
+            elif kind == "MP4_COVER":
+                covers = list(f.tags.get("covr", []))
+                covers.pop(ref)
+                f.tags["covr"] = covers
+                applied.append(f"deleted spam cover [covr #{ref}]")
 
     # ── encoding ──────────────────────────────────────────────────────────────
     if check_enc:
