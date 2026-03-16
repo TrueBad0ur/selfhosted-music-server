@@ -626,6 +626,24 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 applied.append(f"set title to '{clean_title}'")
             tags["title"] = clean_title
 
+    # ── date tag normalization: TDRL/TYER → TDRC (MP3 only) ──────────────────
+    # Navidrome uses TDRC for album year in album_id computation.
+    # TDRL (release date) or TYER (old year tag) won't be picked up → album split.
+    if type(f).__name__ == "MP3" and f.tags is not None:
+        tdrc = f.tags.get("TDRC")
+        tdrl = f.tags.get("TDRL")
+        tyer = f.tags.get("TYER")
+        year_src = tdrl or tyer
+        if not tdrc and year_src:
+            year_val = str(_frame_text(year_src))[:4]
+            issues.append(f"date: missing TDRC, copying from {'TDRL' if tdrl else 'TYER'}: '{year_val}'")
+            if fix:
+                from mutagen.id3 import TDRC as _TDRC
+                f.tags.add(_TDRC(encoding=0, text=[year_val]))
+                if tdrl:
+                    del f.tags["TDRL"]
+                applied.append(f"set TDRC='{year_val}' (removed {'TDRL' if tdrl else 'TYER'})")
+
     # ── album + albumartist forced from path ──────────────────────────────────
     if check_alb:
         excluded_dir = next((p for p in path.parts if p in EXCLUDE_DIRS), None)
