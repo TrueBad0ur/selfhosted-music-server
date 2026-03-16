@@ -646,9 +646,11 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                     set_tag(f, "albumartist", correct_albumartist)
                     applied.append(f"set albumartist to '{correct_albumartist}'")
 
-            # Force artist to match the artist folder name (same source as albumartist)
+            # Force artist from folder name, but keep "Artist feat. X" values intact
+            # Only force when artist doesn't already start with the correct artist name
             current_artist = tags.get("artist", "")
-            if current_artist != correct_albumartist:
+            if (current_artist != correct_albumartist
+                    and not current_artist.lower().startswith(correct_albumartist.lower())):
                 issues.append(f"artist: '{current_artist or '<empty>'}' → '{correct_albumartist}'")
                 if fix:
                     set_tag(f, "artist", correct_albumartist)
