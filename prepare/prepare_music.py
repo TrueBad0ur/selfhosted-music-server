@@ -330,6 +330,13 @@ def check_id3_junk_frames(f) -> list:
             if _is_spam_comment(text):
                 junk.append((key, text))
             continue
+        # PRIV frames from Windows Media Player — cause album-split bugs in Navidrome
+        # (WMCollectionID / WMCollectionGroupID are GUIDs used for album grouping)
+        if frame_type == "PRIV":
+            owner = key[5:] if key.startswith("PRIV:") else ""
+            if owner.startswith("WM/") or owner in ("AverageLevel", "PeakValue"):
+                junk.append((key, f"WMP private frame [{owner}]"))
+            continue
         if frame_type not in _JUNK_FRAME_KEYS:
             continue
         text = _frame_text(f.tags[key])
