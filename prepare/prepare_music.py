@@ -387,6 +387,10 @@ def check_watermarks(tags: dict) -> dict:
 
 _UNKNOWN_ARTIST = {"unknown artist", "unknown", "неизвестный исполнитель", "неизвестный"}
 
+def _strip_the(s: str) -> str:
+    """Remove leading 'The ' for comparison ('The Beatles' == 'Beatles')."""
+    return _re.sub(r'^the\s+', '', s.strip(), flags=_re.IGNORECASE)
+
 def artist_from_filename(stem: str) -> str | None:
     """Extract artist from 'Artist - Title' filename stem.
     Returns None if first part is purely numeric or pattern not found."""
@@ -645,6 +649,16 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 if fix:
                     set_tag(f, "albumartist", correct_albumartist)
                     applied.append(f"set albumartist to '{correct_albumartist}'")
+
+            # Normalize artist to albumartist when they differ only by "The " prefix
+            # e.g. artist='Beatles', albumartist='The Beatles' → set artist='The Beatles'
+            current_artist = tags.get("artist", "")
+            if (current_artist and current_artist != correct_albumartist
+                    and _strip_the(current_artist).lower() == _strip_the(correct_albumartist).lower()):
+                issues.append(f"artist: '{current_artist}' → '{correct_albumartist}' (the-normalization)")
+                if fix:
+                    set_tag(f, "artist", correct_albumartist)
+                    applied.append(f"set artist to '{correct_albumartist}'")
 
     # ── filename watermark ────────────────────────────────────────────────────
     new_stem = strip_watermarks(path.stem)
