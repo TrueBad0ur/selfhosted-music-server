@@ -31,6 +31,8 @@ services:
       ND_LASTFM_APIKEY: "${LASTFM_APIKEY}"
       ND_LASTFM_SECRET: "${LASTFM_SECRET}"
       ND_COVERARTPRIORITY: "folder,embedded,external"
+    dns:
+      10.10.10.145
 
   #nginx:
   #  image: nginx:latest
