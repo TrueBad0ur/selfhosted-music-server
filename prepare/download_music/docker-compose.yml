@@ -1,0 +1,7 @@
+services:
+  download_music:
+    build: .
+    volumes:
+      - ${MUSIC_DIR}:/music
+    environment:
+      - LASTFM_KEY=${LASTFM_KEY}

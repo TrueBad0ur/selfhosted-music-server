@@ -1,0 +1,22 @@
+# Secrets
+.env
+CLAUDE.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Application data
+application/music/
+application/data/
+application/cache/
+application/logs/
+application/audiomuse/
+application/scripts/sync.conf
+
+# Prepare tool data
+prepare/music/
+prepare/data/
+prepare/cache/
+prepare/logs/

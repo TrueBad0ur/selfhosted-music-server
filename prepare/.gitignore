@@ -1,6 +1,0 @@
-./music/*
-./data/*
-./cache/*
-./logs/*
-.env
-__pycache__/*

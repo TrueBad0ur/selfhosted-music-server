@@ -1,7 +1,3 @@
-version: "3.8"
-
-# Music library path is set in .env file (MUSIC_DIR)
-
 services:
   prepare:
     build: .

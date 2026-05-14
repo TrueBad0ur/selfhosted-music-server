@@ -733,6 +733,8 @@ def clean_album_dirname(name: str) -> str:
     # Strip trailing disc suffix first so it doesn't block paren removal
     # e.g. "Яблокитай (2022 RM, ...) - 2CD" → "Яблокитай (2022 RM, ...)"
     s = _re.sub(r'\s*-\s*\d+[xX]?(LP|CD|EP)\s*$', '', s, flags=_re.IGNORECASE)
+    # Strip "- Single" / "- EP" suffix (Last.fm appends these to single/EP release names)
+    s = _re.sub(r'\s*-\s*(Single|EP)\s*$', '', s, flags=_re.IGNORECASE)
 
     # Strip ALL trailing paren/bracket groups
     changed = True

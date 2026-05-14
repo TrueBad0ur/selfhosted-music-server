@@ -6,24 +6,36 @@ Self-hosted music server based on [Navidrome](https://www.navidrome.org/) with [
 
 ```
 .
-├── application/    # Docker stack (single-machine setup)
-└── prepare/        # Music metadata checker and fixer
+├── application/            # Docker stack (Navidrome + AudioMuse-AI)
+└── prepare/
+    ├── prepare_music/      # Metadata checker and fixer
+    └── download_music/     # Track downloader (yt-dlp + Last.fm)
 ```
 
 ---
 
 ## Quick Start
 
-### 1. Prepare music metadata
+### 1. Download music (optional)
 
 ```bash
-cd prepare
+cd prepare/download_music
+cp .env.example .env   # set MUSIC_DIR and LASTFM_KEY
+python3 download_music.py --album "Rammstein" "Mutter" --out /music --lastfm-key $LASTFM_KEY
+```
+
+See [Downloading Music](#downloading-music--download_musicpy) for full details.
+
+### 2. Prepare music metadata
+
+```bash
+cd prepare/prepare_music
 cp .env.example .env   # set MUSIC_DIR=/path/to/your/music
 docker compose run --rm prepare /music         # dry-run
 docker compose run --rm prepare /music --fix   # apply fixes
 ```
 
-### 2. Configure the stack
+### 3. Configure the stack
 
 ```bash
 cd application
@@ -39,11 +51,11 @@ LASTFM_SECRET=your_secret
 POSTGRES_PASSWORD=yourdbpassword
 ```
 
-### 3. Add the AudioMuse-AI plugin
+### 4. Add the AudioMuse-AI plugin
 
 Download `audiomuseai.ndp` from [AudioMuse-AI-NV-plugin releases](https://github.com/NeptuneHub/AudioMuse-AI-NV-plugin/releases) → place in `application/data/plugins/`.
 
-### 4. Start
+### 5. Start
 
 ```bash
 cd application
@@ -56,11 +68,11 @@ cd application
 | AudioMuse-AI | 8000 |
 | Uploader | 8091 |
 
-### 5. Configure plugin in Navidrome
+### 6. Configure plugin in Navidrome
 
 **Settings → Plugins → AudioMuse-AI** → enable → URL: `http://audiomuse-flask:8000`
 
-### 6. Run Analysis
+### 7. Run Analysis
 
 1. Open `http://<server>:8000`
 2. **Start Analysis** — scans audio features (runs in background)
@@ -92,159 +104,21 @@ When Navidrome and AudioMuse-AI run on separate machines.
 
 ### Music machine
 
-Directory structure:
-```
-navidrome/
-├── docker-compose.yml
-├── .env
-├── data/plugins/   # place audiomuseai.ndp here
-├── music/
-├── cache/
-└── uploader/
-```
+Use the same `application/docker-compose.yml` but remove the `audiomuse-flask`, `audiomuse-worker`, `redis`, and `postgres` services — keep only `navidrome` and `uploader`.
 
-`docker-compose.yml`:
-```yaml
-version: "3.8"
-services:
-  navidrome:
-    image: deluan/navidrome:pr-5044
-    container_name: navidrome
-    user: "1000:1000"
-    restart: always
-    ports:
-      - "4533:4533"
-    volumes:
-      - ./data:/data
-      - ./music:/music:ro
-      - ./cache:/cache
-    environment:
-      ND_MUSICFOLDER: /music
-      ND_DATAFOLDER: /data
-      ND_CACHEFOLDER: /cache
-      ND_LOGLEVEL: info
-      ND_DEFAULTTHEME: Spotify-ish
-      ND_PLUGINS_ENABLED: "true"
-      ND_PLUGINS_AUTORELOAD: "true"
-      ND_AGENTS: "audiomuseai,lastfm,spotify,deezer"
-      ND_LASTFM_ENABLED: "true"
-      ND_LASTFM_APIKEY: "${LASTFM_APIKEY}"
-      ND_LASTFM_SECRET: "${LASTFM_SECRET}"
-      ND_COVERARTPRIORITY: "folder,embedded,external"
-      ND_MUSICBRAINZ_ENABLED: "true"
-      ND_MUSICBRAINZ_COVERART_ENABLED: "true"
+In Navidrome plugin settings, point the AudioMuse-AI URL to the AI machine: `http://<AI_MACHINE_IP>:8000`
 
-  uploader:
-    image: python:3.11-slim
-    container_name: navidrome_uploader
-    working_dir: /app
-    restart: always
-    user: "1000:1000"
-    volumes:
-      - ./uploader:/app
-      - ./music/All/All:/uploads
-    command: python3 /app/uploader.py
-    ports:
-      - "8091:8091"
-```
-
-`.env`:
+`.env` only needs:
 ```env
 LASTFM_APIKEY=your_key
 LASTFM_SECRET=your_secret
 ```
 
-Plugin URL in Navidrome: `http://<AI_MACHINE_IP>:8000`
-
 ### AI machine
 
-Directory structure:
-```
-audiomuse/
-├── docker-compose.yml
-├── .env
-├── audiomuse-patch/Dockerfile
-└── audiomuse/{postgres,redis,temp-flask,temp-worker}/
-```
+Use the same `application/docker-compose.yml` but remove `navidrome` and `uploader` — keep only `audiomuse-flask`, `audiomuse-worker`, `redis`, and `postgres`.
 
-`audiomuse-patch/Dockerfile`:
-```dockerfile
-FROM ghcr.io/neptunehub/audiomuse-ai:latest
-RUN grep -rl 'job\.get_id()' /app/ | xargs sed -i 's/job\.get_id()/job.id/g'
-```
-
-`docker-compose.yml`:
-```yaml
-version: "3.8"
-services:
-  redis:
-    image: redis:7-alpine
-    container_name: audiomuse-redis
-    volumes:
-      - ./audiomuse/redis:/data
-    restart: unless-stopped
-
-  postgres:
-    image: postgres:15-alpine
-    container_name: audiomuse-postgres
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
-      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
-    volumes:
-      - ./audiomuse/postgres:/var/lib/postgresql/data
-    restart: unless-stopped
-
-  audiomuse-flask:
-    build: ./audiomuse-patch
-    container_name: audiomuse-ai-flask
-    ports:
-      - "8000:8000"
-    environment:
-      SERVICE_TYPE: "flask"
-      MEDIASERVER_TYPE: "navidrome"
-      NAVIDROME_URL: "http://${NAVIDROME_HOST}:4533"
-      NAVIDROME_USER: "${NAVIDROME_USER}"
-      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
-      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
-      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
-      POSTGRES_HOST: "postgres"
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://redis:6379/0"
-      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER:-NONE}"
-      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
-      TEMP_DIR: "/app/temp_audio"
-    volumes:
-      - ./audiomuse/temp-flask:/app/temp_audio
-    depends_on: [redis, postgres]
-    restart: unless-stopped
-
-  audiomuse-worker:
-    build: ./audiomuse-patch
-    container_name: audiomuse-ai-worker
-    environment:
-      SERVICE_TYPE: "worker"
-      MEDIASERVER_TYPE: "navidrome"
-      NAVIDROME_URL: "http://${NAVIDROME_HOST}:4533"
-      NAVIDROME_USER: "${NAVIDROME_USER}"
-      NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
-      POSTGRES_USER: ${POSTGRES_USER:-audiomuse}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-audiomusepassword}
-      POSTGRES_DB: ${POSTGRES_DB:-audiomusedb}
-      POSTGRES_HOST: "postgres"
-      POSTGRES_PORT: "5432"
-      REDIS_URL: "redis://redis:6379/0"
-      AI_MODEL_PROVIDER: "${AI_MODEL_PROVIDER:-NONE}"
-      CLAP_ENABLED: "${CLAP_ENABLED:-true}"
-      TEMP_DIR: "/app/temp_audio"
-    volumes:
-      - ./audiomuse/temp-worker:/app/temp_audio
-    depends_on: [redis, postgres]
-    restart: unless-stopped
-```
-
-`.env`:
+Set `NAVIDROME_URL` to point at the music machine:
 ```env
 NAVIDROME_HOST=192.168.1.XXX
 NAVIDROME_USER=admin
@@ -258,9 +132,10 @@ CLAP_ENABLED=true
 docker compose build && docker compose up -d
 ```
 
+
 ---
 
-## Music Metadata — Prepare Script
+## Music Metadata — prepare_music.py
 
 Checks and fixes common metadata issues before adding tracks to Navidrome.
 
@@ -275,7 +150,7 @@ Checks and fixes common metadata issues before adding tracks to Navidrome.
 | Wrong album / albumartist | Forces from directory structure |
 
 ```bash
-cd prepare
+cd prepare/prepare_music
 cp .env.example .env   # set MUSIC_DIR
 
 docker compose run --rm prepare /music                   # dry-run (all checks)
@@ -298,14 +173,116 @@ music/
 │   └── Album/
 │       └── track.mp3    →  album=Album, albumartist=Artist
 ├── All/                 ← playlist folder
-├── All-Rap/             ← playlist folder
-├── Classics/            ← playlist folder
-├── Garazh/              ← playlist folder
-├── ReverseDungeon/      ← playlist folder
-└── TexnoFunk/           ← playlist folder
+└── Singles/             ← tracks with no identified album
 ```
 
 Tracks in playlist folders get `album` forced to the folder name to avoid polluting real albums. To add more playlist folders edit `EXCLUDE_DIRS` in `prepare_music.py`.
+
+---
+
+## Downloading Music — download_music.py
+
+Downloads tracks from YouTube via [yt-dlp](https://github.com/yt-dlp/yt-dlp), using [Last.fm](https://www.last.fm/api) for the official track listing.
+
+### Prerequisites
+
+```bash
+pip install yt-dlp mutagen
+apt install ffmpeg   # required by yt-dlp for audio conversion
+```
+
+If `yt-dlp` is installed to `~/.local/bin`, add it to PATH:
+```bash
+export PATH=$PATH:~/.local/bin
+```
+
+### Setup
+
+```bash
+cd prepare/download_music
+cp .env.example .env
+```
+
+`.env`:
+```env
+MUSIC_DIR=/path/to/your/music
+LASTFM_KEY=your_lastfm_api_key
+```
+
+Get a free Last.fm API key at: https://www.last.fm/api/account/create
+
+### Usage
+
+```bash
+export LASTFM_KEY=your_key   # or pass --lastfm-key each time
+
+# List all albums for an artist
+python3 download_music.py --artist "Rammstein" --list-albums
+
+# Download a full album (auto-creates music/Artist/Year - Album/ folder)
+python3 download_music.py --album "Rammstein" "Mutter" --out /music
+
+# Download into an exact folder (skips tracks already present)
+python3 download_music.py --album "Rammstein" "Mutter" --dest /music/Rammstein/Mutter
+
+# Download a single track into a folder
+python3 download_music.py --track "Rammstein" "Du hast" --out /music/Rammstein/Mutter
+
+# Dry-run — show what would be downloaded without doing anything
+python3 download_music.py --album "Rammstein" "Mutter" --dest /music/Rammstein/Mutter --dry-run
+```
+
+### How it works
+
+1. **Last.fm** `album.getInfo` → fetches the official track list (title, artist, year)
+2. Compares against files already in `--dest` using slug-normalized matching (ignores case, punctuation, spaces) — existing tracks are skipped
+3. For each missing track: searches YouTube with `ytsearch5:Artist Title`, filters results to `duration < 600s` (avoids full-album uploads), downloads the first match as MP3 at best quality via ffmpeg
+4. Renames the downloaded file to `Artist - Title.mp3`
+5. Writes correct `artist`, `title`, `album`, `year` ID3 tags via mutagen
+
+### After downloading
+
+Always run `prepare_music.py --fix` after downloading a batch — it normalizes album/albumartist tags from the folder structure and strips any leftover YouTube metadata:
+
+```bash
+cd prepare/prepare_music
+docker compose run --rm prepare /music --fix
+```
+
+Then trigger a rescan in Navidrome (Settings → Scan Library), or via API:
+```bash
+curl "http://localhost:4533/rest/startScan?u=admin&p=PASSWORD&v=1.16.1&c=myapp&f=json"
+```
+
+### File naming
+
+Files are saved as `Artist - Title.mp3` inside the destination folder. The folder structure Navidrome uses for grouping is:
+
+```
+music/
+└── ArtistName/
+    └── AlbumName/          # or "YYYY - AlbumName" when year is known
+        └── Artist - Title.mp3
+```
+
+### Skip logic
+
+A track is skipped if a file whose name (after stripping the `Artist - ` prefix) slug-matches the Last.fm track title. This means `Rammstein - Du Hast.mp3` and `rammstein - du hast.flac` are both treated as present — the script won't re-download.
+
+### Known limitations
+
+- YouTube search may not find very obscure tracks or ones with unusual titles
+- Tracks longer than 10 minutes are filtered out (catches full-album uploads misidentified as singles) — this can miss legitimate long tracks like live recordings
+- The script downloads one track at a time sequentially (no parallel downloads)
+
+### Docker
+
+```bash
+cd prepare/download_music
+docker compose run --rm download_music --album "Rammstein" "Mutter" --dest /music/Rammstein/Mutter
+```
+
+The container mounts `$MUSIC_DIR` as `/music` and reads `LASTFM_KEY` from `.env`.
 
 ---
 
@@ -448,5 +425,6 @@ Requires AVX2. In Proxmox: VM → Hardware → Processors → CPU type: `host`.
 | `POSTGRES_PASSWORD` | DB password (default: `audiomusepassword`) |
 | `AI_MODEL_PROVIDER` | `NONE`, `OLLAMA`, `OPENAI`, `GEMINI`, `MISTRAL` |
 | `CLAP_ENABLED` | Text search, requires AVX2 (default: `true`) |
-| `LASTFM_APIKEY` | Last.fm API key |
-| `LASTFM_SECRET` | Last.fm API secret |
+| `LASTFM_APIKEY` | Last.fm API key (Navidrome integration) |
+| `LASTFM_SECRET` | Last.fm API secret (Navidrome integration) |
+| `LASTFM_KEY` | Last.fm API key (download_music.py) |
