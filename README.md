@@ -1,5 +1,12 @@
 # Navidrome Self-Hosted
 
+## TODO
+
+- [ ] **AcoustID fingerprinting** — identify tracks by audio content via MusicBrainz/AcoustID API. Flag files where actual audio does not match tagged artist. Requires `fpcalc` (chromaprint) in Dockerfile + AcoustID API key.
+- [ ] **Refactoring** - split all there python functions into separate files
+---
+
+
 Self-hosted music server based on [Navidrome](https://www.navidrome.org/) with [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI) integration for library analysis, instant mix, and similar track discovery.
 
 ## Repository Structure

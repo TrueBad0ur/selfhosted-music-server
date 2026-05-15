@@ -144,10 +144,11 @@ def ytdlp_download(artist, title, dest_path, dry_run=False):
         "--max-downloads", "1",
         "--quiet", "--no-warnings",
     ]
+    existing_mp3s = set(dest_path.parent.glob("*.mp3"))
     print(f"  ↓ {dest_path.name}", end="", flush=True)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        new_mp3s = [f for f in dest_path.parent.glob("*.mp3") if f != dest_path]
+        new_mp3s = [f for f in dest_path.parent.glob("*.mp3") if f not in existing_mp3s and f != dest_path]
         if new_mp3s:
             newest = max(new_mp3s, key=lambda f: f.stat().st_mtime)
             newest.rename(dest_path)
@@ -168,7 +169,7 @@ def ytdlp_download(artist, title, dest_path, dry_run=False):
 # ── Commands ───────────────────────────────────────────────────────────────────
 
 def _slug_norm(s):
-    return re.sub(r'[^a-z0-9]', '', s.lower())
+    return re.sub(r'[^\w]', '', s.lower())
 
 def cmd_list_artist(args):
     print(f"\nSearching Last.fm for artist: {args.artist}")
