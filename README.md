@@ -85,18 +85,61 @@ cd application
 
 > After adding new tracks: re-run **Analysis** only. Clustering is optional.
 
-### Tuning mix length
+### Analysis & Clustering Parameters
 
-If mix loops after ~5 tracks, adjust at `http://<server>:8000`:
+Open `http://<server>:8000` to configure. Values below are tested on a ~6500 track library.
 
-| Parameter | Tip |
+**Analysis Parameters**
+
+| Parameter | Value |
 |---|---|
-| **TOP Playlist Number** | Fewer clusters → larger → more tracks per mix. Try 8–10. |
-| **Max Distance** | Increase (e.g. 0.7–0.8) to widen similarity radius. |
-| **Min Clusters** | Lower for larger clusters on a small library. |
-| **Max Songs Per Cluster** | `0` = unlimited (recommended). |
+| Number of Recent Albums | 5 |
+| Top N Moods | 6 |
 
-After changing parameters re-run **Clustering** (Analysis not needed).
+**Clustering Parameters**
+
+| Parameter | Value | Notes |
+|---|---|---|
+| Clustering Algorithm | K-Means | most stable for 5k+ tracks |
+| TOP Playlist Number | 20 | ~330 tracks/playlist |
+| Clustering Runs | 10 | quality/speed balance |
+| Max Distance | 0.65 | similarity radius |
+| Max Songs Per Cluster | 0 | unlimited |
+| PCA Components Min | 10 | |
+| PCA Components Max | 40 | |
+| Min Songs Per Genre for Stratification | 25 | |
+| Stratified Sampling Target Percentile | 75 | |
+| Use Embeddings for Clustering | false | uses standard audio features (BPM, key, energy); true only when CLAP_ENABLED=true in .env and Analysis re-run |
+
+**Score Weights** (each group sums to 1.0)
+
+| Parameter | Value |
+|---|---|
+| Diversity Score Weight | 0.4 |
+| Purity Score Weight | 0.6 |
+| Other Feature Diversity Weight | 0.4 |
+| Other Feature Purity Weight | 0.6 |
+| Silhouette Score Weight | 0.4 |
+| Davies-Bouldin Score Weight | 0.3 |
+| Calinski-Harabasz Score Weight | 0.3 |
+
+**K-Means Specific**
+
+| Parameter | Value |
+|---|---|
+| Min Clusters | 15 |
+| Max Clusters | 50 |
+
+> After changing clustering parameters re-run **Clustering** (Analysis not needed).
+> If mixes are too diverse
+
+> **CLAP** (Contrastive Language-Audio Pretraining) — Microsoft neural model that semantically
+> understands audio content. With CLAP, clustering is based on actual sound rather than just
+> tags/metadata. Requires AVX2 CPU support and `CLAP_ENABLED=true` in `application/.env`.
+> The UI checkbox "Use Embeddings for Clustering" is independent — when CLAP is disabled it
+> falls back to standard audio features. To enable: set `CLAP_ENABLED=true`, restart the stack,
+> re-run **Analysis** to recompute embeddings, then re-run **Clustering**.
+> If mixes are too diverse — raise Purity Score Weight to 0.7, lower Max Clusters to 35.
 
 ---
 
