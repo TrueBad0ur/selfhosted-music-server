@@ -17,6 +17,7 @@ import json
 import time
 import argparse
 import subprocess
+from difflib import SequenceMatcher
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -250,6 +251,12 @@ def check_title_artist_prefix(tags: dict, stem: str = "") -> str | None:
 # ── watermark cleanup ────────────────────────────────────────────────────────
 # Matches [muzmo.ru], [zaycev.net], [mp3load.net], etc. — anything like [word.ext]
 _WATERMARK_RE = _re.compile(r"\s*[\[\(][\w.-]+\.[a-zA-Z]{2,}[\]\)]", _re.IGNORECASE)
+
+# Strips media-type suffixes yt-dlp injects into titles: (video), (Official Video), etc.
+_TITLE_MEDIA_SUFFIX_RE = _re.compile(
+    r'\s*[\(\[]\s*(?:official\s+)?(?:music\s+)?(?:lyric\s+)?(?:video|audio|mv|hd|4k|vevo)\s*[\)\]]',
+    _re.IGNORECASE,
+)
 # Matches http(s)://muzmo.ru, http://zaycev.net, etc. — URL-form watermarks in junk frames
 _WATERMARK_URL_RE = _re.compile(r"https?://[\w.-]+\.[\w]{2,}", _re.IGNORECASE)
 
@@ -298,6 +305,13 @@ _JUNK_FLAC_YOUTUBE: set[str] = {
 }
 
 # YouTube content categories that appear in TCON/genre — not real music genres
+# Variants that lose to the plain original on duration mismatch — auto-deleted.
+# Remixes / covers / acoustics are kept (may be intentional alternate versions).
+_DUP_DELETE_VARIANT_RE = _re.compile(
+    r'\b(radio[\s.]?(?:edit|mix|version)|live(?:\s+(?:at|in|from|in\s+concert))?|remaster(?:ed)?|elements\s+live|in\s+concert)\b',
+    _re.IGNORECASE,
+)
+
 _BONUS_TRACK_RE = _re.compile(
     r'\b(acoustic|live|remix|edit|radio.?edit|instrumental|karaoke|cover|'
     r'reprise|interlude|skit|demo|dj\s|bonus|version|remaster)\b',
@@ -729,6 +743,17 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 applied.append(f"set title to '{clean_title}'")
             tags["title"] = clean_title
 
+        # ── title media suffix: (video), (Official Video), (lyric video) etc. ──
+        raw_title = tags.get("title", "")
+        if raw_title and _TITLE_MEDIA_SUFFIX_RE.search(raw_title):
+            stripped_title = _TITLE_MEDIA_SUFFIX_RE.sub("", raw_title).strip()
+            if stripped_title and stripped_title != raw_title:
+                issues.append(f"title media suffix: '{raw_title}' → '{stripped_title}'")
+                if fix:
+                    set_tag(f, "title", stripped_title)
+                    applied.append(f"stripped title suffix: '{stripped_title}'")
+                tags["title"] = stripped_title
+
     # ── date tag normalization: TDRL/TYER → TDRC (MP3 only) ──────────────────
     # Navidrome uses TDRC for album year in album_id computation.
     # TDRL (release date) or TYER (old year tag) won't be picked up → album split.
@@ -815,7 +840,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
 _YEAR_DIR_PREFIX_RE = _re.compile(r'^\d{4}(\s*\[\d{4}\])?\s*[-\.]\s*')
 
 _META_PAREN_KEYWORDS = _re.compile(
-    r'\b(deluxe|explicit|clean|remaster(?:ed)?|'
+    r'\b(deluxe|explicit|clean|remaster(?:ed)?|video|audio|official|'
     r'(?:standard|bonus|special|limited|anniversary|collector.?s)\s+(?:edition|tracks?)|'
     r'bonus\s+tracks?|компиляция|сборник)\b',
     _re.IGNORECASE
@@ -1134,10 +1159,20 @@ def _match_to_tracklist(slug: str, tracklist: dict[str, tuple[int, str]]) -> tup
     entry = tracklist.get(slug)
     if entry:
         return entry
-    # Partial slug match (handles minor title differences)
+    # Substring match
     for lfm_slug, (rank, name) in tracklist.items():
         if lfm_slug and slug and (lfm_slug in slug or slug in lfm_slug):
             return (rank, name)
+    # Fuzzy match — handles contractions, minor wording differences (wanna/want to etc.)
+    best_ratio, best_entry = 0.0, None
+    for lfm_slug, (rank, name) in tracklist.items():
+        if not lfm_slug:
+            continue
+        r = SequenceMatcher(None, slug, lfm_slug).ratio()
+        if r > best_ratio:
+            best_ratio, best_entry = r, (rank, name)
+    if best_ratio >= 0.82:
+        return best_entry
     return None
 
 def _lastfm_artist_albums(artist: str, api_key: str) -> list[str]:
@@ -1267,6 +1302,24 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
         # Rank-to-name map for warnings
         rank_to_name = {rank: name for _, (rank, name) in tracklist.items()}
 
+        # Slugs of local files that didn't match any Last.fm track — used to detect
+        # already-present tracks with slightly different names before downloading.
+        unmatched_slugs: list[tuple[str, Path]] = []
+        for _fp, _f, _rank, _ in assignments:
+            if _rank is not None:
+                continue
+            _t = type(_f).__name__
+            if _t == 'MP3' and _f.tags:
+                _tt = _frame_text(_f.tags.get('TIT2') or '')
+            elif _t == 'FLAC':
+                _tt = (_f.get('title') or [''])[0]
+            elif _t == 'MP4' and _f.tags:
+                _tt = str((_f.tags.get('\xa9nam') or [''])[0])
+            else:
+                _tt = ''
+            _slug = _title_slug(_tt) if _tt else _title_slug(_fp.stem)
+            unmatched_slugs.append((_slug, _fp))
+
         # Decide: use Last.fm numbers directly, OR renumber sequentially
         # Renumber when tracks are missing so there are no gaps (e.g. 2,4,5 → 1,2,3)
         if missing:
@@ -1297,10 +1350,28 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
                 if _BONUS_TRACK_RE.search(name):
                     print(f"      [MISSING/BONUS] track {rank}: '{name}' (skipped — acoustic/remix/bonus)")
                 else:
-                    real_missing += 1
-                    print(f"      [MISSING] track {rank}: '{name}'")
-                    if fix:
-                        to_download.append((artist, name, str(p)))
+                    # Check if an unmatched local file is already a near-match
+                    missing_slug = _title_slug(name)
+                    near = next(
+                        (fp for sl, fp in unmatched_slugs
+                         if SequenceMatcher(None, missing_slug, sl).ratio() >= 0.82),
+                        None,
+                    )
+                    if near:
+                        canonical = near.parent / f"{artist} - {name}{near.suffix}"
+                        print(f"      [NEAR MATCH] track {rank}: '{name}' ≈ '{near.name}'")
+                        print(f"               → rename: '{near.name}' → '{canonical.name}'")
+                        if fix:
+                            try:
+                                near.rename(canonical)
+                                print(f"               [✓] renamed")
+                            except Exception as e:
+                                print(f"               [ERROR] {e}")
+                    else:
+                        real_missing += 1
+                        print(f"      [MISSING] track {rank}: '{name}'")
+                        if fix:
+                            to_download.append((artist, name, str(p)))
             print(f"      [renumber] {len(missing)} track(s) missing → renumbering 1–{len(final)}")
 
         for fpath, f, rank, existing_trck in changes:
@@ -1641,7 +1712,17 @@ def scan_duplicates(root: Path, fix: bool) -> int:
                 dp_dur = getattr(getattr(MutagenFile(str(dp), easy=False), "info", None), "length", 0) or 0
                 dur_ok = keep_dur == 0 or dp_dur == 0 or abs(keep_dur - dp_dur) / keep_dur < 0.10
                 if not dur_ok:
-                    print(f"            [SKIP] {dp.name} — duration mismatch ({dp_dur:.0f}s vs {keep_dur:.0f}s), verify manually")
+                    keep_is_edit = bool(_DUP_DELETE_VARIANT_RE.search(keep.stem))
+                    dp_is_edit   = bool(_DUP_DELETE_VARIANT_RE.search(dp.stem))
+                    if keep_is_edit and not dp_is_edit:
+                        # Variant scored better (bitrate/format) but original should win
+                        print(f"      [DUP] keep: {dp.name}")
+                        print(f"            drop (variant): {keep.name}")
+                        if fix:
+                            keep.unlink()
+                            print(f"            [deleted]")
+                    else:
+                        print(f"            [SKIP] {dp.name} — duration mismatch ({dp_dur:.0f}s vs {keep_dur:.0f}s), verify manually")
                     continue
                 print(f"            drop: {dp.name}")
                 if fix:
