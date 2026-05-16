@@ -14,9 +14,7 @@ Self-hosted music server based on [Navidrome](https://www.navidrome.org/) with [
 ```
 .
 ├── application/            # Docker stack (Navidrome + AudioMuse-AI)
-└── prepare/
-    ├── prepare_music/      # Metadata checker and fixer
-    └── download_music/     # Track downloader (yt-dlp + Last.fm)
+└── prepare/            # Metadata checker, fixer, and downloader (single Docker image)
 ```
 
 ---
@@ -26,9 +24,8 @@ Self-hosted music server based on [Navidrome](https://www.navidrome.org/) with [
 ### 1. Download music (optional)
 
 ```bash
-cd prepare/download_music
-cp .env.example .env   # set MUSIC_DIR and LASTFM_KEY
-python3 download_music.py --album "Rammstein" "Mutter" --out /music --lastfm-key $LASTFM_KEY
+cd prepare
+docker compose run --rm prepare /music --download-album "Rammstein" "Mutter"
 ```
 
 See [Downloading Music](#downloading-music--download_musicpy) for full details.
@@ -36,7 +33,7 @@ See [Downloading Music](#downloading-music--download_musicpy) for full details.
 ### 2. Prepare music metadata
 
 ```bash
-cd prepare/prepare_music
+cd prepare
 cp .env.example .env   # set MUSIC_DIR=/path/to/your/music
 docker compose run --rm prepare /music         # dry-run
 docker compose run --rm prepare /music --fix   # apply fixes
@@ -146,6 +143,8 @@ docker compose build && docker compose up -d
 
 Checks and fixes common metadata issues before adding tracks to Navidrome.
 
+### Checks
+
 | Issue | Fix |
 |---|---|
 | Broken encoding (cp1251 as latin-1) | Re-encodes field |
@@ -155,9 +154,20 @@ Checks and fixes common metadata issues before adding tracks to Navidrome.
 | Artist prefix in title tag (`Artist - Title`) | Strips prefix, sets correct title |
 | Unknown artist | Extracts from directory path or filename |
 | Wrong album / albumartist | Forces from directory structure |
+| Artist tag case mismatch (e.g. `ПОРНОфИЛЬМЫ` vs folder `Порнофильмы`) | Forces exact folder name |
+| Junk ID3 frames (COMM spam, USLT embedded lyrics, TPOS disc number) | Deletes frames |
+| Variant filenames (duplicate with `(1)` suffix etc.) | Flags for manual review |
+| Duplicate tracks in album (same title slug, different file) | Keeps better quality (format → bitrate), deletes worse |
+| Wrong track numbers (validated against Last.fm tracklist) | Renumbers from Last.fm order |
+| Missing tracks (in Last.fm tracklist but not on disk) | Downloads automatically on `--fix` |
+| Bonus/live/remix tracks missing from Last.fm | Flagged as `[MISSING/BONUS]`, not downloaded |
+
+> **USLT** (embedded lyrics) always indicates a lyric-video yt-dlp download — verify the audio content.
+
+### Usage
 
 ```bash
-cd prepare/prepare_music
+cd prepare
 cp .env.example .env   # set MUSIC_DIR
 
 docker compose run --rm prepare /music                   # dry-run (all checks)
@@ -169,8 +179,45 @@ docker compose run --rm prepare /music --fix --album-only
 
 After editing `prepare_music.py`, rebuild:
 ```bash
-docker compose build --no-cache && docker compose run --rm prepare /music
+cd prepare && docker compose build && docker compose run --rm prepare /music
 ```
+
+### Missing track download
+
+When `--fix` is passed and Last.fm reports a missing track, the script downloads it automatically after scanning all albums:
+
+```
+[DOWNLOAD] Downloading 2 missing track(s)...
+  → Порнофильмы — Это пройдёт
+  → Порнофильмы — Доброе сердце
+[DOWNLOAD] Done.
+```
+
+Renumbering for that album is deferred — re-run `--fix` after the download to apply correct track numbers.
+
+Bonus/live/remix/acoustic tracks are never downloaded (flagged as `[MISSING/BONUS]`).
+
+### Downloading new albums
+
+```bash
+# Download a specific album
+docker compose run --rm prepare /music --download-album "Порнофильмы" "Как В Последний Раз"
+
+# Download all albums for an artist
+docker compose run --rm prepare /music --download-album "Порнофильмы" --all-albums
+```
+
+Album folders are created automatically as `Artist/YYYY - Album/`. After downloading, run `--fix` to normalize tags.
+
+### Skipping an album
+
+Place a `.skip` file inside an album folder to exclude it from track-number checks and downloads entirely:
+
+```bash
+touch "/music/Artist/Album/.skip"
+```
+
+Useful when the local files intentionally diverge from the Last.fm tracklist (e.g. manually curated version, local recordings).
 
 ### Directory structure for album/albumartist detection
 
@@ -252,7 +299,7 @@ python3 download_music.py --album "Rammstein" "Mutter" --dest /music/Rammstein/M
 Always run `prepare_music.py --fix` after downloading a batch — it normalizes album/albumartist tags from the folder structure and strips any leftover YouTube metadata:
 
 ```bash
-cd prepare/prepare_music
+cd prepare
 docker compose run --rm prepare /music --fix
 ```
 
@@ -284,12 +331,12 @@ A track is skipped if a file whose name (after stripping the `Artist - ` prefix)
 
 ### Docker
 
-```bash
-cd prepare/download_music
-docker compose run --rm download_music --album "Rammstein" "Mutter" --dest /music/Rammstein/Mutter
-```
+Downloading is built into the prepare container:
 
-The container mounts `$MUSIC_DIR` as `/music` and reads `LASTFM_KEY` from `.env`.
+```bash
+cd prepare
+docker compose run --rm prepare /music --download-album "Rammstein" "Mutter"
+```
 
 ---
 

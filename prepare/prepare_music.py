@@ -16,6 +16,7 @@ import sys
 import json
 import time
 import argparse
+import subprocess
 import urllib.request
 import urllib.parse
 from pathlib import Path
@@ -297,6 +298,12 @@ _JUNK_FLAC_YOUTUBE: set[str] = {
 }
 
 # YouTube content categories that appear in TCON/genre — not real music genres
+_BONUS_TRACK_RE = _re.compile(
+    r'\b(acoustic|live|remix|edit|radio.?edit|instrumental|karaoke|cover|'
+    r'reprise|interlude|skit|demo|dj\s|bonus|version|remaster)\b',
+    _re.IGNORECASE,
+)
+
 _JUNK_GENRE_RE = _re.compile(
     r'^(people\s*&\s*blogs?|film\s*&\s*animation|gaming|howto\s*&\s*style|'
     r'news\s*&\s*politics|nonprofits?\s*&\s*activism|science\s*&\s*technology|'
@@ -771,7 +778,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             # Only force when artist doesn't already start with the correct artist name
             current_artist = tags.get("artist", "")
             if (current_artist != correct_albumartist
-                    and not current_artist.lower().startswith(correct_albumartist.lower())):
+                    and not current_artist.startswith(correct_albumartist)):
                 issues.append(f"artist: '{current_artist or '<empty>'}' → '{correct_albumartist}'")
                 if fix:
                     set_tag(f, "artist", correct_albumartist)
@@ -1133,9 +1140,31 @@ def _match_to_tracklist(slug: str, tracklist: dict[str, tuple[int, str]]) -> tup
             return (rank, name)
     return None
 
+def _lastfm_artist_albums(artist: str, api_key: str) -> list[str]:
+    params = urllib.parse.urlencode({
+        "method": "artist.getTopAlbums",
+        "artist": artist,
+        "limit": "100",
+        "autocorrect": "1",
+        "api_key": api_key,
+        "format": "json",
+    })
+    try:
+        with urllib.request.urlopen(
+            f"https://ws.audioscrobbler.com/2.0/?{params}", timeout=10
+        ) as resp:
+            data = json.loads(resp.read())
+        albums = data.get("topalbums", {}).get("album", [])
+        return [a["name"] for a in albums if a["name"] not in ("[unknown]", "")]
+    except Exception as e:
+        print(f"  [Last.fm error] {e}")
+        return []
+
+
 def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
     """Set track number tags from Last.fm. Falls back to 1 when no data."""
     albums_done: int = 0
+    to_download: list = []  # (artist, track_name, out_dir)
 
     for dirpath, _, filenames in os.walk(root):
         p = Path(dirpath)
@@ -1152,6 +1181,10 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
             p / fn for fn in filenames if Path(fn).suffix.lower() in AUDIO_EXTENSIONS
         )
         if not audio_paths:
+            continue
+
+        if (p / '.skip').exists():
+            print(f'  [SKIP] {rel} (.skip marker)')
             continue
 
         # (path, mutagen_obj, existing_track_number)
@@ -1208,8 +1241,21 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
         # assignments: (fpath, f, assigned_rank, existing_trck)
         assignments = []
         for fpath, f, existing_trck in file_data:
-            slug  = _title_slug(fpath.stem)
+            # Prefer tag title for slug (handles transliterated filenames)
+            t = type(f).__name__
+            if t == "MP3" and f.tags:
+                tag_title = _frame_text(f.tags.get("TIT2") or "")
+            elif t == "FLAC":
+                tag_title = (f.get("title") or [""])[0]
+            elif t == "MP4" and f.tags:
+                tag_title = str((f.tags.get("\xa9nam") or [""])[0])
+            else:
+                tag_title = ""
+            slug = _title_slug(tag_title) if tag_title else _title_slug(fpath.stem)
             match = _match_to_tracklist(slug, tracklist)
+            # Fallback: try stem slug if tag didn't match
+            if match is None and tag_title:
+                match = _match_to_tracklist(_title_slug(fpath.stem), tracklist)
             rank  = match[0] if match else None
             assignments.append((fpath, f, rank, existing_trck))
 
@@ -1244,25 +1290,45 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
         albums_done += 1
         print(f"\n  {rel}")
 
+        real_missing = 0
         if missing:
             for rank in sorted(missing):
                 name = rank_to_name.get(rank, '?')
-                print(f"      [MISSING] track {rank}: '{name}'")
-                print(f"               → download: python3 download_music.py "
-                      f"--track \"{artist}\" \"{name}\" "
-                      f"--out /music/{artist}/{p.name} "
-                      f"--lastfm-key {lastfm_key}")
+                if _BONUS_TRACK_RE.search(name):
+                    print(f"      [MISSING/BONUS] track {rank}: '{name}' (skipped — acoustic/remix/bonus)")
+                else:
+                    real_missing += 1
+                    print(f"      [MISSING] track {rank}: '{name}'")
+                    if fix:
+                        to_download.append((artist, name, str(p)))
             print(f"      [renumber] {len(missing)} track(s) missing → renumbering 1–{len(final)}")
 
         for fpath, f, rank, existing_trck in changes:
             print(f"      [!] {fpath.name}: {existing_trck or '?'} → {rank}")
-            if fix:
+            if fix and real_missing == 0:
                 try:
                     _set_tracknum(f, rank)
                     f.save()
                 except Exception as e:
                     print(f"      [ERROR] {e}")
+        if fix and real_missing > 0 and changes:
+            print("      [SKIP renumber] downloading missing tracks first — re-run to apply")
 
+
+    if fix and to_download:
+        print(f"\n[DOWNLOAD] Downloading {len(to_download)} missing track(s)...")
+        for dl_artist, dl_name, dl_out in to_download:
+            print(f"  → {dl_artist} — {dl_name}")
+            sys.stdout.flush()
+            result = subprocess.run(
+                ["python3", "/app/download_music.py",
+                 "--track", dl_artist, dl_name,
+                 "--out", dl_out,
+                 "--lastfm-key", lastfm_key],
+            )
+            if result.returncode != 0:
+                print(f"  [ERROR] download failed for '{dl_name}' (exit {result.returncode})")
+        print("[DOWNLOAD] Done.")
     return albums_done
 
 
@@ -1499,6 +1565,92 @@ def _safe_dirname(name: str) -> str:
     return _re.sub(r'[<>:"/\\|?*]', '', name).strip(' .')
 
 
+def _dup_score(fp: Path, artist_dir: str) -> tuple:
+    """Lower score = better file to keep.
+    Priority: format > bitrate > standard naming > file size."""
+    fmt = _FORMAT_PRIORITY.get(fp.suffix.lower(), 99)
+    f = MutagenFile(str(fp), easy=False)
+    bitrate = 0
+    if f and hasattr(f, "info"):
+        bitrate = getattr(f.info, "bitrate", 0) or 0
+    stem = fp.stem
+    import re as _re2
+    has_dup_suffix = bool(_re2.search(r'[_(]\d+\)?$', stem))
+    non_standard   = 0 if (" - " in stem and not has_dup_suffix) else 1
+    return (fmt, -bitrate, non_standard, -fp.stat().st_size)
+
+
+def scan_duplicates(root: Path, fix: bool) -> int:
+    """Detect duplicate tracks within an album (same title slug, multiple files).
+    Keeps the file with best format + highest bitrate; skips if durations diverge > 10%."""
+    albums_found: int = 0
+
+    for dirpath, _, filenames in os.walk(root):
+        p = Path(dirpath)
+        if is_excluded(p):
+            continue
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if len(rel.parts) != 2:
+            continue
+
+        audio_files: list[Path] = sorted(
+            p / fn for fn in filenames if Path(fn).suffix.lower() in AUDIO_EXTENSIONS
+        )
+        if len(audio_files) < 2:
+            continue
+
+        # Group by title slug (from tag, fall back to stem)
+        groups: dict[str, list[Path]] = {}
+        for fpath in audio_files:
+            f = MutagenFile(str(fpath), easy=False)
+            if f is None:
+                continue
+            t = type(f).__name__
+            if t == "MP3" and f.tags:
+                title = _frame_text(f.tags.get("TIT2") or "") or fpath.stem
+            elif t == "FLAC":
+                title = (f.get("title") or [""])[0] or fpath.stem
+            elif t == "MP4" and f.tags:
+                title = str((f.tags.get("\xa9nam") or [""])[0]) or fpath.stem
+            else:
+                title = fpath.stem
+            slug = _title_slug(title)
+            groups.setdefault(slug, []).append(fpath)
+
+        dups = {slug: paths for slug, paths in groups.items() if len(paths) > 1}
+        if not dups:
+            continue
+
+        albums_found += 1
+        print(f"\n  {rel}")
+
+        artist_dir = p.parent.name
+        for slug, paths in dups.items():
+            ranked = sorted(paths, key=lambda fp: _dup_score(fp, artist_dir))
+            keep   = ranked[0]
+            delete = ranked[1:]
+
+            # Duration sanity check: if any file's duration differs > 10% from keeper — warn, don't delete
+            keep_dur = getattr(getattr(MutagenFile(str(keep), easy=False), "info", None), "length", 0) or 0
+
+            print(f"      [DUP] keep: {keep.name}")
+            for dp in delete:
+                dp_dur = getattr(getattr(MutagenFile(str(dp), easy=False), "info", None), "length", 0) or 0
+                dur_ok = keep_dur == 0 or dp_dur == 0 or abs(keep_dur - dp_dur) / keep_dur < 0.10
+                if not dur_ok:
+                    print(f"            [SKIP] {dp.name} — duration mismatch ({dp_dur:.0f}s vs {keep_dur:.0f}s), verify manually")
+                    continue
+                print(f"            drop: {dp.name}")
+                if fix:
+                    dp.unlink()
+                    print(f"            [deleted]")
+
+    return albums_found
+
+
 def scan_singles(root: Path, fix: bool, lastfm_key: str) -> int:
     """Dissolve Singles folders — each track gets its own Artist/TrackName/ directory."""
     folders_done: int = 0
@@ -1705,7 +1857,50 @@ def main():
     parser.add_argument("--tracknums-only", action="store_true", help="Set track numbers from Last.fm")
     parser.add_argument("--singles-only",   action="store_true", help="Dissolve Singles folders into per-track directories")
     parser.add_argument("--lastfm-key",     default="e4f9f2118dc2d6185af3ca25c13b7e70", help="Last.fm API key")
+    parser.add_argument("--download-album", nargs="+", metavar="ARG",
+                        help='Download album: --download-album "Artist" "Album" or with --all-albums')
+    parser.add_argument("--all-albums",     action="store_true",
+                        help="With --download-album: download every album for the artist")
     args = parser.parse_args()
+
+    if args.download_album:
+        artist = args.download_album[0]
+        root = Path(args.path)
+        if args.all_albums:
+            albums = _lastfm_artist_albums(artist, args.lastfm_key)
+            if not albums:
+                print(f"No albums found for '{artist}' on Last.fm")
+                sys.exit(1)
+            print(f"Found {len(albums)} album(s) for '{artist}'")
+            for alb in albums:
+                print(f"\n→ Downloading: {artist} — {alb}")
+                sys.stdout.flush()
+                subprocess.run([
+                    "python3", "/app/download_music.py",
+                    "--album", artist, alb,
+                    "--out", str(root),
+                    "--lastfm-key", args.lastfm_key,
+                ])
+        else:
+            if len(args.download_album) < 2:
+                albums = _lastfm_artist_albums(artist, args.lastfm_key)
+                if not albums:
+                    print(f"No albums found for '{artist}' on Last.fm")
+                    sys.exit(1)
+                print(f"Albums available for '{artist}' ({len(albums)}):")
+                for i, alb in enumerate(albums, 1):
+                    print(f"  {i:>3}. {alb}")
+                sys.exit(0)
+            album = " ".join(args.download_album[1:])
+            print(f"→ Downloading: {artist} — {album}")
+            sys.stdout.flush()
+            subprocess.run([
+                "python3", "/app/download_music.py",
+                "--album", artist, album,
+                "--out", str(root),
+                "--lastfm-key", args.lastfm_key,
+            ])
+        sys.exit(0)
 
     run_all         = not (args.encoding_only or args.artists_only or args.album_only
                            or args.variants_only or args.tracknums_only or args.singles_only)
@@ -1749,12 +1944,13 @@ def main():
         if check_enc:   checks.append("encoding")
         if check_art:   checks.append("artists")
         if check_alb:   checks.append("album")
-        if run_all:     checks += ["variants", "track-numbers", "singles"]
+        if run_all:     checks += ["variants", "track-numbers", "singles", "duplicates"]
         print(f"Scanning: {root}")
         print(f"Checks: {' '.join(checks)}")
         print(f"Mode: {'FIX' if args.fix else 'DRY-RUN'}\n{'─'*60}")
         scan(root, args.fix, check_enc, check_art, check_alb)
         if run_all:
+            scan_duplicates(root, args.fix)
             scan_variants(root, args.fix)
             scan_track_numbers(root, args.fix, args.lastfm_key)
             n = scan_singles(root, args.fix, args.lastfm_key)
