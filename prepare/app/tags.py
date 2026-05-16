@@ -1,0 +1,215 @@
+import sys
+from pathlib import Path
+
+try:
+    from mutagen import File as MutagenFile
+    from mutagen.id3 import TDRC, TRCK, TIT2, TPE1, TPE2, TALB
+except ImportError:
+    print("ERROR: mutagen not installed. Run: pip install mutagen")
+    sys.exit(1)
+
+
+def _frame_text(frame) -> str:
+    """Extract text content from an ID3 frame."""
+    if hasattr(frame, "url"):
+        return frame.url
+    if hasattr(frame, "text"):
+        t = frame.text
+        return str(t[0]) if isinstance(t, list) else str(t)
+    return str(frame)
+
+
+def get_tags(f) -> dict:
+    """Return a normalized dict: artist, albumartist, album, title."""
+    tags = {}
+    t = type(f).__name__
+
+    if t == "MP3":
+        id3 = f.tags
+        if id3 is None:
+            return tags
+        def _get(key):
+            frame = id3.get(key)
+            return str(frame) if frame else None
+        tags["artist"]       = _get("TPE1")
+        tags["albumartist"]  = _get("TPE2")
+        tags["album"]        = _get("TALB")
+        tags["title"]        = _get("TIT2")
+        tags["tracknumber"]  = _get("TRCK")
+
+    elif t == "FLAC":
+        def _get(key):
+            v = f.get(key)
+            return v[0] if v else None
+        tags["artist"]       = _get("artist")
+        tags["albumartist"]  = _get("albumartist")
+        tags["album"]        = _get("album")
+        tags["title"]        = _get("title")
+        tags["tracknumber"]  = _get("tracknumber")
+
+    elif t == "MP4":
+        def _get(key):
+            v = f.tags.get(key) if f.tags else None
+            return v[0] if v else None
+        tags["artist"]       = _get("\xa9ART")
+        tags["albumartist"]  = _get("aART")
+        tags["album"]        = _get("\xa9alb")
+        tags["title"]        = _get("\xa9nam")
+
+    else:
+        if not f.tags:
+            return tags
+        def _get(key):
+            v = f.tags.get(key)
+            return v[0] if v else None
+        tags["artist"]       = _get("artist")
+        tags["albumartist"]  = _get("albumartist")
+        tags["album"]        = _get("album")
+        tags["title"]        = _get("title")
+        tags["tracknumber"]  = _get("tracknumber")
+
+    return {k: v for k, v in tags.items() if v}
+
+
+def set_tag(f, key: str, value):
+    """Write a tag back. value can be str or list of str (for multi-value artist)."""
+    t = type(f).__name__
+
+    if t == "MP3":
+        mapping = {"title": TIT2, "artist": TPE1, "albumartist": TPE2, "album": TALB, "tracknumber": TRCK}
+        frame_cls = mapping.get(key)
+        if frame_cls:
+            if f.tags is None:
+                f.add_tags()
+            text = value if isinstance(value, list) else [value]
+            f.tags[frame_cls.__name__] = frame_cls(encoding=3, text=text)
+
+    elif t == "FLAC":
+        f[key] = value
+
+    elif t == "MP4":
+        mapping = {"title": "\xa9nam", "artist": "\xa9ART", "albumartist": "aART", "album": "\xa9alb"}
+        mp4_key = mapping.get(key)
+        if mp4_key:
+            if f.tags is None:
+                f.add_tags()
+            f.tags[mp4_key] = value if isinstance(value, list) else [value]
+
+    else:
+        if f.tags is None:
+            f.add_tags()
+        f.tags[key] = value if isinstance(value, list) else [value]
+
+
+def _get_tracknum(f) -> int | None:
+    """Return current track number (int) or None."""
+    t = type(f).__name__
+    if t == "MP3" and f.tags:
+        frame = f.tags.get("TRCK")
+        if frame:
+            v = str(frame).split("/")[0].strip()
+            return int(v) if v.isdigit() else None
+    elif t == "FLAC":
+        v = (f.get("tracknumber") or [""])[0]
+        if v:
+            v = str(v).split("/")[0].strip()
+            return int(v) if v.isdigit() else None
+    elif t == "MP4" and f.tags:
+        tn = f.tags.get("trkn")
+        if tn:
+            return tn[0][0] if isinstance(tn[0], tuple) else int(tn[0])
+    else:
+        if f.tags:
+            v = (f.tags.get("tracknumber") or [""])[0] if hasattr(f.tags, "get") else None
+            if v:
+                return int(str(v).split("/")[0]) if str(v).split("/")[0].isdigit() else None
+    return None
+
+
+def _set_tracknum(f, num: int):
+    """Write track number tag (does NOT call f.save())."""
+    t = type(f).__name__
+    if t == "MP3":
+        if f.tags is None:
+            f.add_tags()
+        f.tags["TRCK"] = TRCK(encoding=3, text=[str(num)])
+    elif t == "FLAC":
+        f["tracknumber"] = [str(num)]
+    elif t == "MP4":
+        if f.tags is None:
+            f.add_tags()
+        f.tags["trkn"] = [(num, 0)]
+    else:
+        if f.tags is None:
+            f.add_tags()
+        f.tags["tracknumber"] = [str(num)]
+
+
+def _extract_year(f) -> str | None:
+    """Return 4-digit year string from a mutagen file object, or None."""
+    t = type(f).__name__
+    candidates = []
+    if t == "MP3" and f.tags:
+        for frame_name in ("TDRC", "TDRL", "TYER"):
+            frame = f.tags.get(frame_name)
+            if frame:
+                candidates.append(str(frame)[:4])
+    elif t == "FLAC":
+        d = (f.get("date") or [""])[0]
+        if d:
+            candidates.append(d[:4])
+    elif t == "MP4" and f.tags:
+        d = str((f.tags.get("\xa9day") or [""])[0])
+        if d:
+            candidates.append(d[:4])
+    else:
+        if f.tags:
+            d = (f.tags.get("date") or f.tags.get("year") or [""])[0] if hasattr(f.tags, "get") else ""
+            if d:
+                candidates.append(str(d)[:4])
+    for c in candidates:
+        if c.isdigit() and 1900 <= int(c) <= 2100:
+            return c
+    return None
+
+
+def _set_year(f, year: str):
+    """Write year tag to a mutagen file object (does NOT call f.save())."""
+    t = type(f).__name__
+    if t == "MP3":
+        if f.tags is None:
+            f.add_tags()
+        f.tags.add(TDRC(encoding=0, text=[year]))
+    elif t == "FLAC":
+        f["date"] = [year]
+        if "year" in f:
+            del f["year"]
+    elif t == "MP4":
+        if f.tags is None:
+            f.add_tags()
+        f.tags["\xa9day"] = [year]
+    else:
+        if f.tags is None:
+            f.add_tags()
+        f.tags["date"] = [year]
+
+
+def _raw_date(f) -> str:
+    """Return the raw date string stored in the tag (before year extraction).
+
+    For FLAC, both 'date' and 'year' vorbis keys are checked — 'year' may contain
+    a full ISO timestamp when 'date' has already been normalised to YYYY.
+    """
+    t = type(f).__name__
+    if t == "MP3" and f.tags:
+        for frame_name in ("TDRC", "TDRL", "TYER"):
+            frame = f.tags.get(frame_name)
+            if frame:
+                return str(frame)
+    elif t == "FLAC":
+        date_val = (f.get("date") or [""])[0]
+        year_val = (f.get("year") or [""])[0]
+        return year_val if len(year_val) > len(date_val) else date_val
+    elif t == "MP4" and f.tags:
+        return str((f.tags.get("\xa9day") or [""])[0])
+    return ""
