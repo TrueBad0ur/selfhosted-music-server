@@ -11,23 +11,23 @@ Usage:
 Requires: pip install mutagen
 """
 
+import hashlib
 import os
 import sys
 import json
+import re as _re
 import time
 import argparse
 import subprocess
+from collections import defaultdict
 from difflib import SequenceMatcher
+from pathlib import Path
 import urllib.request
 import urllib.parse
-from pathlib import Path
 
 try:
-    import mutagen
     from mutagen import File as MutagenFile
-    from mutagen.id3 import ID3, ID3NoHeaderError
-    from mutagen.mp4 import MP4
-    from mutagen.flac import FLAC
+    from mutagen.id3 import ID3, TDRC, TRCK, TIT2, TPE1, TPE2, TALB
 except ImportError:
     print("ERROR: mutagen not installed. Run: pip install mutagen")
     sys.exit(1)
@@ -176,7 +176,6 @@ def set_tag(f, key: str, value):
     t = type(f).__name__
 
     if t == "MP3":
-        from mutagen.id3 import TIT2, TPE1, TPE2, TALB, TRCK
         mapping = {"title": TIT2, "artist": TPE1, "albumartist": TPE2, "album": TALB, "tracknumber": TRCK}
         frame_cls = mapping.get(key)
         if frame_cls:
@@ -214,8 +213,6 @@ def check_encoding(tags: dict) -> dict:
         elif looks_like_mojibake(value):
             fixes[field] = fix_mojibake(value)
     return fixes
-
-import re as _re
 
 # ── bad-char cleanup ──────────────────────────────────────────────────────────
 
@@ -304,7 +301,6 @@ _JUNK_FLAC_YOUTUBE: set[str] = {
     "major_brand", "minor_version", "compatible_brands",
 }
 
-# YouTube content categories that appear in TCON/genre — not real music genres
 # Variants that lose to the plain original on duration mismatch — auto-deleted.
 # Remixes / covers / acoustics are kept (may be intentional alternate versions).
 _DUP_DELETE_VARIANT_RE = _re.compile(
@@ -318,6 +314,7 @@ _BONUS_TRACK_RE = _re.compile(
     _re.IGNORECASE,
 )
 
+# YouTube content categories that appear in TCON/genre — not real music genres
 _JUNK_GENRE_RE = _re.compile(
     r'^(people\s*&\s*blogs?|film\s*&\s*animation|gaming|howto\s*&\s*style|'
     r'news\s*&\s*politics|nonprofits?\s*&\s*activism|science\s*&\s*technology|'
@@ -451,7 +448,6 @@ def check_id3_junk_frames(f) -> list:
 def check_spam_covers(f) -> list:
     """Return list of keys/indices to delete for known spam cover art (by MD5 hash).
     Returns list of frame keys (MP3) or 'FLAC_PIC:{i}' / 'MP4_COVER:{i}' sentinels."""
-    import hashlib
     t = type(f).__name__
     junk = []
 
@@ -602,7 +598,6 @@ def check_artists(tags: dict) -> list:
     return []
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
 
 def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_alb: bool):
     issues = []
@@ -614,7 +609,6 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
         # Corrupted MPEG frame but ID3 tags may still be readable
         if path.suffix.lower() == ".mp3" and "sync" in str(e).lower():
             try:
-                from mutagen.id3 import ID3
                 id3 = ID3(str(path))
                 # Wrap in a minimal MP3-like object so the rest of the code works
                 class _FakeMP3:
@@ -766,8 +760,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             year_val = str(_frame_text(year_src))[:4]
             issues.append(f"date: missing TDRC, copying from {'TDRL' if tdrl else 'TYER'}: '{year_val}'")
             if fix:
-                from mutagen.id3 import TDRC as _TDRC
-                f.tags.add(_TDRC(encoding=0, text=[year_val]))
+                f.tags.add(TDRC(encoding=0, text=[year_val]))
                 if tdrl:
                     del f.tags["TDRL"]
                 applied.append(f"set TDRC='{year_val}' (removed {'TDRL' if tdrl else 'TYER'})")
@@ -929,10 +922,9 @@ def _set_year(f, year: str):
     """Write year tag to a mutagen file object (does NOT call f.save())."""
     t = type(f).__name__
     if t == "MP3":
-        from mutagen.id3 import TDRC as _TDRC
         if f.tags is None:
             f.add_tags()
-        f.tags.add(_TDRC(encoding=0, text=[year]))
+        f.tags.add(TDRC(encoding=0, text=[year]))
     elif t == "FLAC":
         f["date"] = [year]
         if "year" in f:   # remove redundant/conflicting non-standard 'year' key
@@ -1090,10 +1082,9 @@ def _set_tracknum(f, num: int):
     """Write track number tag (does NOT call f.save())."""
     t = type(f).__name__
     if t == "MP3":
-        from mutagen.id3 import TRCK as _TRCK
         if f.tags is None:
             f.add_tags()
-        f.tags["TRCK"] = _TRCK(encoding=3, text=[str(num)])
+        f.tags["TRCK"] = TRCK(encoding=3, text=[str(num)])
     elif t == "FLAC":
         f["tracknumber"] = [str(num)]
     elif t == "MP4":
@@ -1476,8 +1467,6 @@ def scan_dirs(root: Path, fix: bool) -> int:
 
 def scan_variants(root: Path, fix: bool):
     """Report (and optionally delete) variant tracks (Instrumental, Revisited, etc.)."""
-    from collections import defaultdict
-
     albums_found = 0
     files_deleted = 0
 
@@ -1519,11 +1508,10 @@ def scan_variants(root: Path, fix: bool):
                 else:
                     album_issues.append((f"variant '{base}'", variants, originals))
             elif len(originals) > 1:
-                from collections import defaultdict as _dd
                 handled = set()
 
                 # Pass 1: full lowercase stem — catches capitalization dups and format dups
-                by_lower = _dd(list)
+                by_lower = defaultdict(list)
                 for f in originals:
                     by_lower[Path(f).stem.lower()].append(f)
                 for lower_stem, stem_files in by_lower.items():
@@ -1541,7 +1529,7 @@ def scan_variants(root: Path, fix: bool):
 
                 # Pass 2: track part only (after " - ") — catches "Artist feat X - Track"
                 # vs "Artist - Track" where artist prefix differs but track name is same
-                by_track = _dd(list)
+                by_track = defaultdict(list)
                 for f in originals:
                     if f in handled:
                         continue
@@ -1645,8 +1633,7 @@ def _dup_score(fp: Path, artist_dir: str) -> tuple:
     if f and hasattr(f, "info"):
         bitrate = getattr(f.info, "bitrate", 0) or 0
     stem = fp.stem
-    import re as _re2
-    has_dup_suffix = bool(_re2.search(r'[_(]\d+\)?$', stem))
+    has_dup_suffix = bool(_re.search(r'[_(]\d+\)?$', stem))
     non_standard   = 0 if (" - " in stem and not has_dup_suffix) else 1
     return (fmt, -bitrate, non_standard, -fp.stat().st_size)
 
