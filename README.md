@@ -3,7 +3,7 @@
 ## TODO
 
 - [ ] **AcoustID fingerprinting** — identify tracks by audio content via MusicBrainz/AcoustID API. Flag files where actual audio does not match tagged artist. Requires `fpcalc` (chromaprint) in Dockerfile + AcoustID API key.
-- [ ] **Refactoring** - split all there python functions into separate files
+- [x] **Refactoring** - split all there python functions into separate files
 ---
 
 
