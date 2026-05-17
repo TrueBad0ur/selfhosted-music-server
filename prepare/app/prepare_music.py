@@ -84,7 +84,19 @@ def main():
                         help='Download album: --download-album "Artist" "Album" or with --all-albums')
     parser.add_argument("--all-albums",     action="store_true",
                         help="With --download-album: download every album for the artist")
+    parser.add_argument("--list-albums",    metavar="ARTIST",
+                        help="List all available albums for an artist on Last.fm")
     args = parser.parse_args()
+
+    if args.list_albums:
+        albums = _lastfm_artist_albums(args.list_albums, args.lastfm_key)
+        if not albums:
+            print(f"No albums found for '{args.list_albums}' on Last.fm")
+            sys.exit(1)
+        print(f"Albums for '{args.list_albums}' ({len(albums)}):")
+        for i, alb in enumerate(albums, 1):
+            print(f"  {i:>3}. {alb}")
+        sys.exit(0)
 
     if args.download_album:
         artist = args.download_album[0]
