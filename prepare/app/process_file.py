@@ -21,6 +21,10 @@ from checks import (
 )
 from album import clean_album_dirname
 
+_DISC_SUBDIR_RE = _re.compile(r'(?:[\(\[]\s*(?:disc|cd)\s*\d|^CD\d+$)', _re.IGNORECASE)
+_PURE_DISC_RE  = _re.compile(r'^(?:[\(\[]\s*(?:disc|cd)\s*\d+\s*[\)\]]|CD\d+)$', _re.IGNORECASE)
+_DATE_STRIP_RE = _re.compile(r'^(?:\[\d{4}[.\-]\d{2}[.\-]\d{2}\]\s*|\d{4}(?:\.\d{2}\.\d{2})?\s*[-\. ]\s*)')
+
 _TITLE_MEDIA_SUFFIX_RE = _re.compile(
     r'\s*[\(\[]\s*(?:official\s+)?(?:music\s+)?(?:lyric\s+)?(?:video|audio|mv|hd|4k|vevo)\s*[\)\]]',
     _re.IGNORECASE,
@@ -182,8 +186,22 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             correct_album = excluded_dir
             correct_albumartist = None
         else:
-            correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(path.parent.name)))
-            correct_albumartist = path.parent.parent.name or None
+            parent = path.parent
+            if _DISC_SUBDIR_RE.search(parent.name):
+                album_dir = parent.parent
+                correct_albumartist = album_dir.parent.name or None
+                if _PURE_DISC_RE.match(parent.name):
+                    base = album_dir.name
+                    base = _DATE_STRIP_RE.sub('', base)
+                    base = _DATE_STRIP_RE.sub('', base)  # handle doubled date prefix
+                    base = _re.sub(r'\s*\(?\d+\s*(?:CD|LP)\)?\s*$', '', base, flags=_re.IGNORECASE)
+                    base = _re.sub(r'[\s\-.,]+$', '', base)
+                    correct_album = f"{base} {parent.name}" if base else parent.name
+                else:
+                    correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(parent.name)))
+            else:
+                correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(parent.name)))
+                correct_albumartist = parent.parent.name or None
 
         current_album = tags.get("album", "")
         if current_album != correct_album:
@@ -201,12 +219,31 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                     applied.append(f"set albumartist to '{correct_albumartist}'")
 
             current_artist = tags.get("artist", "")
-            if (current_artist != correct_albumartist
-                    and not current_artist.startswith(correct_albumartist)):
-                issues.append(f"artist: '{current_artist or '<empty>'}' → '{correct_albumartist}'")
+            artist_parts = [a.strip() for a in _re.split(r'\s*[;,/\n\x00]\s*', current_artist) if a.strip()]
+            normalized = '; '.join(artist_parts)
+            already_present = any(
+                p == correct_albumartist or (
+                    p.startswith(correct_albumartist) and
+                    len(p) > len(correct_albumartist) and
+                    p[len(correct_albumartist)].isspace()
+                )
+                for p in artist_parts
+            )
+            if not already_present:
+                rem = normalized[len(correct_albumartist):] if normalized.startswith(correct_albumartist) else ''
+                if rem and not rem[0].isspace() and rem[0] not in '-;,/':
+                    new_artist = f"{correct_albumartist}; {rem}"
+                else:
+                    new_artist = f"{normalized}; {correct_albumartist}" if normalized else correct_albumartist
+            elif normalized != current_artist:
+                new_artist = normalized
+            else:
+                new_artist = None
+            if new_artist and new_artist != current_artist:
+                issues.append(f"artist: '{current_artist or '<empty>'}' → '{new_artist}'")
                 if fix:
-                    set_tag(f, "artist", correct_albumartist)
-                    applied.append(f"set artist to '{correct_albumartist}'")
+                    set_tag(f, "artist", new_artist)
+                    applied.append(f"set artist to '{new_artist}'")
 
     new_stem = strip_watermarks(path.stem)
     new_path = path.with_name(new_stem + path.suffix)

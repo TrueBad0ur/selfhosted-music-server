@@ -140,6 +140,15 @@ services:
       AUDIOMUSE_USER: "${AUDIOMUSE_USER:-}"
       AUDIOMUSE_PASSWORD: "${AUDIOMUSE_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
+      ROCR_VISIBLE_DEVICES: "0"
+      HIP_VISIBLE_DEVICES: "0"
+      HSA_OVERRIDE_GFX_VERSION: "10.3.0"
+    devices:
+      - /dev/dri:/dev/dri
+      - /dev/kfd:/dev/kfd
+    group_add:
+      - "44"
+      - "992"
     volumes:
       - ./audiomuse/temp-worker:/app/temp_audio
     depends_on:

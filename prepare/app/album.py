@@ -6,7 +6,12 @@ from mutagen import File as MutagenFile
 from common import AUDIO_EXTENSIONS, EXCLUDE_DIRS, is_excluded, _FORMAT_PRIORITY
 from tags import _extract_year, _set_year, _raw_date
 
-_YEAR_DIR_PREFIX_RE = _re.compile(r'^\d{4}(\s*\[\d{4}\])?\s*[-\.]\s*')
+_YEAR_DIR_PREFIX_RE = _re.compile(
+    r'^(?:'
+    r'\[\d{4}[.\-]\d{2}[.\-]\d{2}\]\s*'               # [YYYY.MM.DD] prefix
+    r'|\d{4}(?!\.\d{2})(?:\s*\[\d{4}\])?\s*[-\.]\s*'  # YYYY - or YYYY.
+    r')'
+)
 
 _META_PAREN_KEYWORDS = _re.compile(
     r'\b(deluxe|explicit|clean|remaster(?:ed)?|video|audio|official|'
@@ -34,6 +39,7 @@ def clean_album_dirname(name: str) -> str:
         return name
     s = _re.sub(r'\s*-\s*\d+[xX]?(LP|CD|EP)\s*$', '', s, flags=_re.IGNORECASE)
     s = _re.sub(r'\s*-\s*(Single|EP)\s*$', '', s, flags=_re.IGNORECASE)
+    s = ' '.join(s.replace('~', ' ').split())
     changed = True
     while changed:
         m = _re.search(r'\s*[\(\[]([^\(\)\[\]]*)[\)\]]\s*$', s)
