@@ -26,3 +26,4 @@ RUN pip uninstall -y onnxruntime && pip install onnxruntime-rocm==1.22.2.post1
 COPY tasks/clap_analyzer.py /app/tasks/clap_analyzer.py
 COPY tasks/analysis.py /app/tasks/analysis.py
 COPY tasks/collection_manager.py /app/tasks/collection_manager.py
+COPY tasks/clustering_helper.py /app/tasks/clustering_helper.py

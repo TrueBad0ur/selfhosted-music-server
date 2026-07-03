@@ -87,7 +87,14 @@ cd application
 
 ### Analysis & Clustering Parameters
 
-Open `http://<server>:8000` to configure. Values below are tested on a ~6500 track library.
+Open `http://<server>:8000` to configure.
+
+**Dataset (current library):**
+- **13 598 tracks** total — all have Essentia 200-dim embeddings computed
+- **~1 926 tracks** used per clustering iteration (stratified sample across genres)
+- Clustering uses Essentia embeddings, computed during Analysis
+
+Values below are optimal for this dataset size (~13k tracks, embeddings enabled).
 
 **Analysis Parameters**
 
@@ -100,16 +107,16 @@ Open `http://<server>:8000` to configure. Values below are tested on a ~6500 tra
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Clustering Algorithm | K-Means | most stable for 5k+ tracks |
-| TOP Playlist Number | 20 | ~330 tracks/playlist |
-| Clustering Runs | 10 | quality/speed balance |
+| Clustering Algorithm | K-Means | only sklearn method with BLAS parallelism |
+| TOP Playlist Number | 20 | ~30 tracks/playlist at this library size |
+| Clustering Runs | 500 | best score 21.10; plateaus after ~480 runs |
 | Max Distance | 0.65 | similarity radius |
 | Max Songs Per Cluster | 0 | unlimited |
-| PCA Components Min | 10 | |
-| PCA Components Max | 40 | |
+| PCA Components Min | 30 | |
+| PCA Components Max | 100 | retains more embedding info vs max=50 |
 | Min Songs Per Genre for Stratification | 25 | |
 | Stratified Sampling Target Percentile | 75 | |
-| Use Embeddings for Clustering | false | uses standard audio features (BPM, key, energy); true only when CLAP_ENABLED=true in .env and Analysis re-run |
+| Use Embeddings for Clustering | true | 200-dim Essentia embeddings; false only if embeddings not yet computed |
 
 **Score Weights** (each group sums to 1.0)
 
@@ -127,8 +134,8 @@ Open `http://<server>:8000` to configure. Values below are tested on a ~6500 tra
 
 | Parameter | Value |
 |---|---|
-| Min Clusters | 15 |
-| Max Clusters | 50 |
+| Min Clusters | 25 |
+| Max Clusters | 70 |
 
 > After changing clustering parameters re-run **Clustering** (Analysis not needed).
 > If mixes are too diverse
