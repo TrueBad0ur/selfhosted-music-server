@@ -488,6 +488,30 @@ docker compose start navidrome
 
 ## Known Issues & Fixes
 
+### AudioMuse-AI: AMD GPU acceleration (ROCm)
+
+The `audiomuse-worker` container is configured to use the discrete AMD GPU via ROCm for ONNX inference (Essentia + CLAP models).
+
+**How it works:**
+- `audiomuse-patch/Dockerfile` installs ROCm 6.4 runtime and `onnxruntime-rocm` inside the container
+- `/dev/dri` and `/dev/kfd` are mapped from host; groups `video` (44) and `render` (992) are added
+- `HSA_OVERRIDE_GFX_VERSION=10.3.0` is required because gfx1032 (RX 6700S / Navi 23) is not officially supported by ROCm — this makes it run as gfx1030
+- `ROCR_VISIBLE_DEVICES=0` restricts ROCm to the discrete GPU only (integrated 680M is not a ROCm device and never appears)
+
+**Monitor GPU load:**
+```bash
+sudo nvtop
+```
+
+The discrete GPU (RX 6700S) should hit ~99% during analysis. The integrated GPU (680M) will stay at 0% — it has no ROCm compute access.
+
+**Patched files** (in `audiomuse-patch/tasks/`):
+- `clap_analyzer.py` — adds `ROCMExecutionProvider` fallback when CUDA is unavailable
+- `analysis.py` — same, for Essentia model sessions
+- `collection_manager.py` — treats PocketBase 404 as empty (PostgreSQL deployment has no PocketBase)
+
+---
+
 ### AudioMuse-AI: `AttributeError: 'Job' object has no attribute 'get_id'`
 
 Upstream RQ bug. Fixed automatically by `audiomuse-patch/Dockerfile` during image build.

@@ -19,6 +19,10 @@ RUN apt-get update -qq && \
 # Replace CPU onnxruntime with ROCm version
 RUN pip uninstall -y onnxruntime && pip install onnxruntime-rocm==1.22.2.post1
 
-# Add ROCm provider support alongside CUDA in clap_analyzer.py
-COPY patch_clap.py /tmp/patch_clap.py
-RUN python3 /tmp/patch_clap.py
+# Patched task files:
+#   clap_analyzer.py  — add ROCMExecutionProvider alongside CUDA
+#   analysis.py       — add ROCMExecutionProvider alongside CUDA
+#   collection_manager.py — treat PocketBase HTTPError as empty (PostgreSQL deployment)
+COPY tasks/clap_analyzer.py /app/tasks/clap_analyzer.py
+COPY tasks/analysis.py /app/tasks/analysis.py
+COPY tasks/collection_manager.py /app/tasks/collection_manager.py
