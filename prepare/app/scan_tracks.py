@@ -182,14 +182,14 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
 
         for fpath, f, rank, existing_trck in changes:
             print(f"      [!] {fpath.name}: {existing_trck or '?'} → {rank}")
-            if fix and real_missing == 0:
+            if fix:
                 try:
                     _set_tracknum(f, rank)
                     f.save()
                 except Exception as e:
                     print(f"      [ERROR] {e}")
         if fix and real_missing > 0 and changes:
-            print("      [SKIP renumber] downloading missing tracks first — re-run to apply")
+            print(f"      [INFO] {real_missing} track(s) missing; re-run after download to update numbering")
 
     if fix and to_download:
         print(f"\n[DOWNLOAD] Downloading {len(to_download)} missing track(s)...")
