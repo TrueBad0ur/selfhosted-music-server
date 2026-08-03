@@ -19,54 +19,41 @@ def _frame_text(frame) -> str:
     return str(frame)
 
 
+def get_tag_values(f, key: str) -> list[str]:
+    """Return every stored value for a normalized tag key."""
+    t = type(f).__name__
+    if t == "MP3":
+        mapping = {
+            "artist": "TPE1", "albumartist": "TPE2", "album": "TALB",
+            "title": "TIT2", "tracknumber": "TRCK",
+        }
+        frame = f.tags.get(mapping.get(key, "")) if f.tags else None
+        raw = frame.text if frame is not None and hasattr(frame, "text") else None
+    elif t == "FLAC":
+        raw = f.get(key)
+    elif t == "MP4":
+        mapping = {
+            "artist": "\xa9ART", "albumartist": "aART", "album": "\xa9alb",
+            "title": "\xa9nam", "tracknumber": "trkn",
+        }
+        raw = f.tags.get(mapping.get(key, "")) if f.tags else None
+    else:
+        raw = f.tags.get(key) if f.tags else None
+    if raw is None:
+        return []
+    values = raw if isinstance(raw, (list, tuple)) else [raw]
+    return [str(value) for value in values if value is not None and str(value)]
+
+
 def get_tags(f) -> dict:
     """Return a normalized dict: artist, albumartist, album, title."""
     tags = {}
     t = type(f).__name__
 
-    if t == "MP3":
-        id3 = f.tags
-        if id3 is None:
-            return tags
-        def _get(key):
-            frame = id3.get(key)
-            return str(frame) if frame else None
-        tags["artist"]       = _get("TPE1")
-        tags["albumartist"]  = _get("TPE2")
-        tags["album"]        = _get("TALB")
-        tags["title"]        = _get("TIT2")
-        tags["tracknumber"]  = _get("TRCK")
-
-    elif t == "FLAC":
-        def _get(key):
-            v = f.get(key)
-            return v[0] if v else None
-        tags["artist"]       = _get("artist")
-        tags["albumartist"]  = _get("albumartist")
-        tags["album"]        = _get("album")
-        tags["title"]        = _get("title")
-        tags["tracknumber"]  = _get("tracknumber")
-
-    elif t == "MP4":
-        def _get(key):
-            v = f.tags.get(key) if f.tags else None
-            return v[0] if v else None
-        tags["artist"]       = _get("\xa9ART")
-        tags["albumartist"]  = _get("aART")
-        tags["album"]        = _get("\xa9alb")
-        tags["title"]        = _get("\xa9nam")
-
-    else:
-        if not f.tags:
-            return tags
-        def _get(key):
-            v = f.tags.get(key)
-            return v[0] if v else None
-        tags["artist"]       = _get("artist")
-        tags["albumartist"]  = _get("albumartist")
-        tags["album"]        = _get("album")
-        tags["title"]        = _get("title")
-        tags["tracknumber"]  = _get("tracknumber")
+    for key in ("artist", "albumartist", "album", "title", "tracknumber"):
+        values = get_tag_values(f, key)
+        if values:
+            tags[key] = "; ".join(values) if key == "artist" else values[0]
 
     return {k: v for k, v in tags.items() if v}
 

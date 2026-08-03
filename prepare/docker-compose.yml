@@ -1,5 +1,12 @@
 services:
   prepare:
     build: .
+    user: "1000:1000"
+    env_file:
+      - ../application/.env
+    environment:
+      MUSIC_DIR: /music
+      NAVIDROME_URL: http://10.10.10.73:4533
     volumes:
       - ${MUSIC_DIR}:/music
+      - ${INCOMING_DIR:-../application/incoming}:/incoming

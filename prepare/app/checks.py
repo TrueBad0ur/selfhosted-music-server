@@ -20,7 +20,10 @@ def check_bad_chars(tags: dict) -> dict:
 
 # ── watermarks ────────────────────────────────────────────────────────────────
 
-_WATERMARK_RE = _re.compile(r"\s*[\[\(][\w.-]+\.[a-zA-Z]{2,}[\]\)]", _re.IGNORECASE)
+_WATERMARK_RE = _re.compile(
+    r"\s*[\[\(](?!(?:feat|ft)\.)[\w.-]+\.[a-zA-Z]{2,}[\]\)]",
+    _re.IGNORECASE,
+)
 _WATERMARK_URL_RE = _re.compile(r"https?://[\w.-]+\.[\w]{2,}", _re.IGNORECASE)
 
 def strip_watermarks(s: str) -> str:
@@ -229,8 +232,9 @@ def _dedup(seq: list) -> list:
     seen = set()
     out = []
     for x in seq:
-        if x not in seen:
-            seen.add(x)
+        key = x.casefold()
+        if key not in seen:
+            seen.add(key)
             out.append(x)
     return out
 

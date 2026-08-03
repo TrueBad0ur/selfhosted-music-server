@@ -14,6 +14,7 @@ application/cache/
 application/logs/
 application/audiomuse/
 application/scripts/sync.conf
+application/quarantine/
 
 # Prepare tool data
 prepare/music/

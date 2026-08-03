@@ -12,7 +12,7 @@ except ImportError:
 
 from common import AUDIO_EXTENSIONS, EXCLUDE_DIRS, is_excluded, _FORMAT_PRIORITY
 from encoding import check_encoding
-from tags import get_tags, set_tag, _frame_text
+from tags import get_tag_values, get_tags, set_tag, _frame_text
 from checks import (
     check_bad_chars, check_watermarks, check_id3_junk_frames,
     check_spam_covers, check_flac_junk_tags, check_title_artist_prefix,
@@ -21,8 +21,11 @@ from checks import (
 )
 from album import clean_album_dirname
 
-_DISC_SUBDIR_RE = _re.compile(r'(?:[\(\[]\s*(?:disc|cd)\s*\d|^CD\d+$)', _re.IGNORECASE)
-_PURE_DISC_RE  = _re.compile(r'^(?:[\(\[]\s*(?:disc|cd)\s*\d+\s*[\)\]]|CD\d+)$', _re.IGNORECASE)
+_DISC_SUBDIR_RE = _re.compile(r'(?:[\(\[]\s*(?:disc|cd|lp)\s*\d|^(?:CD|LP)\d+$)', _re.IGNORECASE)
+_PURE_DISC_RE = _re.compile(
+    r'^(?:[\(\[]\s*(?:disc|cd|lp)\s*\d+\s*[\)\]]|(?:CD|LP)\d+)$',
+    _re.IGNORECASE,
+)
 _DATE_STRIP_RE = _re.compile(r'^(?:\[\d{4}[.\-]\d{2}[.\-]\d{2}\]\s*|\d{4}(?:\.\d{2}\.\d{2})?\s*[-\. ]\s*)')
 
 _TITLE_MEDIA_SUFFIX_RE = _re.compile(
@@ -31,7 +34,14 @@ _TITLE_MEDIA_SUFFIX_RE = _re.compile(
 )
 
 
-def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_alb: bool):
+def process_file(
+    path: Path,
+    fix: bool,
+    check_enc: bool,
+    check_art: bool,
+    check_alb: bool,
+    library_root: Path | None = None,
+):
     issues = []
     applied = []
 
@@ -124,6 +134,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             if fix:
                 set_tag(f, field, fixed)
                 applied.append(f"fixed encoding [{field}]")
+            tags[field] = fixed
 
     if check_art:
         artist_val = tags.get("artist", "")
@@ -138,7 +149,13 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                     applied.append(f"set artist to '{guessed}'")
 
         split = check_artists(tags)
-        if split:
+        stored_artist_values = get_tag_values(f, "artist")
+        canonical_artist = "; ".join(split) if split else ""
+        artist_storage_is_canonical = (
+            stored_artist_values == split or
+            stored_artist_values == [canonical_artist]
+        )
+        if split and not artist_storage_is_canonical:
             issues.append(f"multi-artist: '{tags.get('artist')}' → {split}")
             if fix:
                 set_tag(f, "artist", split)
@@ -146,6 +163,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 if not tags.get("albumartist"):
                     set_tag(f, "albumartist", split[0])
                     applied.append(f"set albumartist to '{split[0]}'")
+            tags["artist"] = canonical_artist
 
         clean_title = check_title_artist_prefix(tags, path.stem)
         if clean_title:
@@ -180,11 +198,30 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                     del f.tags["TDRL"]
                 applied.append(f"set TDRC='{year_val}' (removed {'TDRL' if tdrl else 'TYER'})")
 
-    if check_alb:
+    # Singles are relocated before metadata normalization in the full pipeline.
+    # Avoid writing a provisional album value when processing a staged single directly.
+    if check_alb and path.parent.name != "Singles":
         excluded_dir = next((p for p in path.parts if p in EXCLUDE_DIRS), None)
         if excluded_dir:
             correct_album = excluded_dir
             correct_albumartist = None
+        elif library_root is not None:
+            try:
+                relative = path.relative_to(library_root)
+            except ValueError:
+                relative = None
+            if relative is not None and len(relative.parts) >= 3:
+                artist_name, album_name = relative.parts[:2]
+                disc_name = relative.parts[2] if len(relative.parts) >= 4 else ""
+                if disc_name:
+                    correct_albumartist = artist_name
+                    correct_album = tags.get("album", "") or album_name
+                else:
+                    correct_albumartist = artist_name
+                    correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(album_name)))
+            else:
+                correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(path.parent.name)))
+                correct_albumartist = path.parent.parent.name or None
         else:
             parent = path.parent
             if _DISC_SUBDIR_RE.search(parent.name):
@@ -209,6 +246,7 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             if fix:
                 set_tag(f, "album", correct_album)
                 applied.append(f"set album to '{correct_album}'")
+            tags["album"] = correct_album
 
         if correct_albumartist:
             current_albumartist = tags.get("albumartist", "")
@@ -217,20 +255,51 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
                 if fix:
                     set_tag(f, "albumartist", correct_albumartist)
                     applied.append(f"set albumartist to '{correct_albumartist}'")
+                tags["albumartist"] = correct_albumartist
 
             current_artist = tags.get("artist", "")
             artist_parts = [a.strip() for a in _re.split(r'\s*[;,/\n\x00]\s*', current_artist) if a.strip()]
+            filename_artist = artist_from_filename(path.stem)
+            album_fragments = {
+                value.strip().casefold()
+                for value in correct_album.split(";")
+                if value.strip()
+            }
+            if (
+                filename_artist and
+                filename_artist.casefold() == correct_albumartist.casefold() and
+                any(part.casefold() in album_fragments for part in artist_parts[1:])
+            ):
+                cleaned_parts = [
+                    part for index, part in enumerate(artist_parts)
+                    if index == 0 or part.casefold() not in album_fragments
+                ]
+                cleaned_artist = "; ".join(cleaned_parts)
+                issues.append(
+                    f"artist album-title contamination: '{current_artist}' → '{cleaned_artist}'"
+                )
+                if fix:
+                    set_tag(f, "artist", cleaned_parts)
+                    applied.append(f"removed album-title values from artist: '{cleaned_artist}'")
+                tags["artist"] = cleaned_artist
+                current_artist = cleaned_artist
+                artist_parts = cleaned_parts
             normalized = '; '.join(artist_parts)
+            correct_albumartist_folded = correct_albumartist.casefold()
             already_present = any(
-                p == correct_albumartist or (
-                    p.startswith(correct_albumartist) and
+                p.casefold() == correct_albumartist_folded or (
+                    p.casefold().startswith(correct_albumartist_folded) and
                     len(p) > len(correct_albumartist) and
                     p[len(correct_albumartist)].isspace()
                 )
                 for p in artist_parts
             )
             if not already_present:
-                rem = normalized[len(correct_albumartist):] if normalized.startswith(correct_albumartist) else ''
+                rem = (
+                    normalized[len(correct_albumartist):]
+                    if normalized.casefold().startswith(correct_albumartist_folded)
+                    else ''
+                )
                 if rem and not rem[0].isspace() and rem[0] not in '-;,/':
                     new_artist = f"{correct_albumartist}; {rem}"
                 else:
@@ -242,8 +311,13 @@ def process_file(path: Path, fix: bool, check_enc: bool, check_art: bool, check_
             if new_artist and new_artist != current_artist:
                 issues.append(f"artist: '{current_artist or '<empty>'}' → '{new_artist}'")
                 if fix:
-                    set_tag(f, "artist", new_artist)
+                    new_artist_values = [
+                        value.strip() for value in _re.split(r'\s*[;,/\n\x00]\s*', new_artist)
+                        if value.strip()
+                    ]
+                    set_tag(f, "artist", new_artist_values)
                     applied.append(f"set artist to '{new_artist}'")
+                tags["artist"] = new_artist
 
     new_stem = strip_watermarks(path.stem)
     new_path = path.with_name(new_stem + path.suffix)
@@ -344,6 +418,3 @@ def scan_filename_prefixes(root: Path, fix: bool) -> int:
                         print(f"          [✓] dropped (target already exists, same/better format)")
 
     return albums_found
-
-
-

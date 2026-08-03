@@ -3,8 +3,8 @@ import re as _re
 from pathlib import Path
 from mutagen import File as MutagenFile
 
-from common import AUDIO_EXTENSIONS, EXCLUDE_DIRS, is_excluded, _FORMAT_PRIORITY
-from tags import _extract_year, _set_year, _raw_date
+from common import AUDIO_EXTENSIONS, audio_content_hash, is_excluded
+from tags import _extract_year, _set_year, _raw_date, get_tags
 
 _YEAR_DIR_PREFIX_RE = _re.compile(
     r'^(?:'
@@ -18,6 +18,11 @@ _META_PAREN_KEYWORDS = _re.compile(
     r'(?:standard|bonus|special|limited|anniversary|collector.?s)\s+(?:edition|tracks?)|'
     r'bonus\s+tracks?|компиляция|сборник)\b',
     _re.IGNORECASE
+)
+
+_PURE_DISC_DIR_RE = _re.compile(
+    r"(?:[\(\[]\s*(?:disc|cd|lp)\s*\d+\s*[\)\]]|\b(?:disc|cd|lp)\s*\d+\b|^(?:CD|LP)\d+$)",
+    _re.IGNORECASE,
 )
 
 
@@ -115,6 +120,120 @@ def scan_album_years(root: Path, fix: bool) -> int:
     return albums_fixed
 
 
+class AlbumMergeError(RuntimeError):
+    pass
+
+
+def _conflict_destination(dst: Path, source_label: str) -> Path:
+    label = _re.sub(r"[^\w .()\[\]-]+", "_", source_label).strip(" .") or "alternate"
+    candidate = dst.with_name(f"{dst.stem} [{label}]{dst.suffix}")
+    index = 2
+    while candidate.exists():
+        candidate = dst.with_name(f"{dst.stem} [{label} {index}]{dst.suffix}")
+        index += 1
+    return candidate
+
+
+def _merge_entry(src: Path, dst: Path, source_label: str) -> tuple[int, int]:
+    """Merge one entry without discarding files whose audio content differs."""
+    if not dst.exists():
+        src.rename(dst)
+        return 1, 0
+    if src.is_dir() and dst.is_dir():
+        moved = duplicates = 0
+        for child in sorted(src.iterdir()):
+            child_moved, child_duplicates = _merge_entry(child, dst / child.name, source_label)
+            moved += child_moved
+            duplicates += child_duplicates
+        if not any(src.iterdir()):
+            src.rmdir()
+        return moved, duplicates
+    if src.is_file() and dst.is_file():
+        if audio_content_hash(src) == audio_content_hash(dst):
+            src.unlink()
+            return 0, 1
+        alternate = _conflict_destination(dst, source_label)
+        src.rename(alternate)
+        print(f"      [merge] preserved different audio as '{alternate.name}'")
+        return 1, 0
+    alternate = _conflict_destination(dst, source_label)
+    src.rename(alternate)
+    print(f"      [merge] preserved type conflict as '{alternate.name}'")
+    return 1, 0
+
+
+def scan_nested_track_dirs(root: Path, fix: bool) -> int:
+    """Flatten path separators accidentally embedded in track titles."""
+    planned: list[tuple[Path, Path, Path]] = []
+    for dirpath, _, filenames in os.walk(root):
+        directory = Path(dirpath)
+        if is_excluded(directory):
+            continue
+        for filename in filenames:
+            source = directory / filename
+            if source.suffix.casefold() not in AUDIO_EXTENSIONS:
+                continue
+            try:
+                relative = source.relative_to(root)
+            except ValueError:
+                continue
+            if len(relative.parts) <= 3:
+                continue
+            album_dir = root / relative.parts[0] / relative.parts[1]
+            nested_parts = list(relative.parts[2:-1])
+            destination_dir = album_dir
+            if nested_parts and _PURE_DISC_DIR_RE.search(nested_parts[0]):
+                destination_dir = album_dir / nested_parts.pop(0)
+                if not nested_parts:
+                    continue
+            reconstructed = "⧸".join([*nested_parts, relative.name])
+            try:
+                title = get_tags(MutagenFile(str(source), easy=False)).get("title", "")
+            except Exception:
+                title = ""
+            reconstructed_title = "⧸".join([*nested_parts, source.stem])
+            artist_prefix = f"{relative.parts[0]} - "
+            if reconstructed_title.casefold().startswith(artist_prefix.casefold()):
+                reconstructed_title = reconstructed_title[len(artist_prefix):]
+            normalize = lambda value: _re.sub(r"[^\w]", "", value.casefold())
+            if not title or normalize(title) != normalize(reconstructed_title):
+                continue
+            planned.append((source, destination_dir / reconstructed, album_dir))
+
+    errors: list[str] = []
+    for source, destination, album_dir in planned:
+        print(f"\n  nested: {source.relative_to(root)}")
+        print(f"      [!] → {destination.relative_to(root)}")
+        if not fix:
+            continue
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                if audio_content_hash(source) == audio_content_hash(destination):
+                    source.unlink()
+                    print("      [✓] removed verified duplicate")
+                else:
+                    alternate = _conflict_destination(destination, "nested")
+                    source.rename(alternate)
+                    print(f"      [✓] preserved different audio as '{alternate.name}'")
+            else:
+                source.rename(destination)
+                print("      [✓] flattened")
+            parent = source.parent
+            while parent != album_dir and parent.is_relative_to(album_dir):
+                if any(parent.iterdir()):
+                    break
+                parent.rmdir()
+                parent = parent.parent
+        except OSError as exc:
+            message = f"{source}: {exc}"
+            errors.append(message)
+            print(f"      [ERROR] {message}")
+    if errors:
+        raise AlbumMergeError(f"nested track cleanup failed for {len(errors)} item(s)")
+    return len(planned)
+
+
 def scan_dirs(root: Path, fix: bool) -> int:
     """Report (and optionally rename) album directories with year prefixes or release junk."""
     renames = []
@@ -126,58 +245,40 @@ def scan_dirs(root: Path, fix: bool) -> int:
         if clean != p.name and clean:
             renames.append((p, p.parent / clean))
 
+    errors: list[str] = []
     for old, new in renames:
+        if not old.exists():
+            continue
         print(f"\n  dir: {old.relative_to(root)}")
         print(f"      [!] '{old.name}' → '{new.name}'")
         if fix:
-            if not new.exists():
-                old.rename(new)
-                print(f"      [✓] renamed")
-            else:
-                merged: int = 0
-                skipped: int = 0
+            try:
+                if not new.exists():
+                    old.rename(new)
+                    print(f"      [✓] renamed")
+                    continue
+                merged = duplicates = 0
                 for src in sorted(old.iterdir()):
-                    dst = new / src.name
-                    if src.is_dir():
-                        if not dst.exists():
-                            src.rename(dst)
-                            print(f"      [merge] moved subdir '{src.name}'")
-                            merged += 1
-                        else:
-                            sub_merged = 0
-                            for sub_src in sorted(src.iterdir()):
-                                sub_dst = dst / sub_src.name
-                                if not sub_dst.exists():
-                                    sub_src.rename(sub_dst)
-                                    sub_merged += 1
-                                else:
-                                    sub_src.unlink() if sub_src.is_file() else None
-                            if not any(src.iterdir()):
-                                src.rmdir()
-                            print(f"      [merge] merged subdir '{src.name}' ({sub_merged} item(s))")
-                            merged += sub_merged
-                    else:
-                        if not dst.exists():
-                            src.rename(dst)
-                            merged += 1
-                        else:
-                            src_pri = _FORMAT_PRIORITY.get(src.suffix.lower(), 99)
-                            dst_pri = _FORMAT_PRIORITY.get(dst.suffix.lower(), 99)
-                            if src_pri < dst_pri:
-                                dst.unlink()
-                                src.rename(dst)
-                                print(f"      [merge] replaced '{dst.name}' with better format")
-                                merged += 1
-                            else:
-                                src.unlink()
-                                print(f"      [merge] dropped '{src.name}' (worse/equal format)")
-                                skipped += 1
+                    try:
+                        item_merged, item_duplicates = _merge_entry(src, new / src.name, old.name)
+                        merged += item_merged
+                        duplicates += item_duplicates
+                    except OSError as exc:
+                        message = f"{src}: {exc}"
+                        errors.append(message)
+                        print(f"      [ERROR] {message}")
                 remaining = list(old.iterdir())
                 if not remaining:
                     old.rmdir()
-                    print(f"      [✓] merged {merged} file(s) into '{new.name}'" +
-                          (f", dropped {skipped}" if skipped else ""))
+                    print(f"      [✓] merged {merged} item(s) into '{new.name}'" +
+                          (f", removed {duplicates} verified duplicate(s)" if duplicates else ""))
                 else:
                     print(f"      [!] '{old.name}' still has {len(remaining)} item(s) after merge")
+            except OSError as exc:
+                message = f"{old}: {exc}"
+                errors.append(message)
+                print(f"      [ERROR] {message}")
 
+    if errors:
+        raise AlbumMergeError(f"album directory merge failed for {len(errors)} item(s)")
     return len(renames)

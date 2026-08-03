@@ -1,7 +1,5 @@
 import os
 import re as _re
-import sys
-import subprocess
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -20,9 +18,8 @@ _BONUS_TRACK_RE = _re.compile(
 
 
 def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
-    """Set track number tags from Last.fm. Falls back to sequential when no data."""
+    """Set track numbers on existing files; never download missing tracks."""
     albums_done: int = 0
-    to_download: list = []
 
     for dirpath, _, filenames in os.walk(root):
         p = Path(dirpath)
@@ -176,8 +173,6 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
                     else:
                         real_missing += 1
                         print(f"      [MISSING] track {rank}: '{name}'")
-                        if fix:
-                            to_download.append((artist, name, str(p)))
             print(f"      [renumber] {len(missing)} track(s) missing → renumbering 1–{len(final)}")
 
         for fpath, f, rank, existing_trck in changes:
@@ -191,18 +186,4 @@ def scan_track_numbers(root: Path, fix: bool, lastfm_key: str) -> int:
         if fix and real_missing > 0 and changes:
             print(f"      [INFO] {real_missing} track(s) missing; re-run after download to update numbering")
 
-    if fix and to_download:
-        print(f"\n[DOWNLOAD] Downloading {len(to_download)} missing track(s)...")
-        for dl_artist, dl_name, dl_out in to_download:
-            print(f"  → {dl_artist} — {dl_name}")
-            sys.stdout.flush()
-            result = subprocess.run(
-                ["python3", "/app/download_music.py",
-                 "--track", dl_artist, dl_name,
-                 "--out", dl_out,
-                 "--lastfm-key", lastfm_key],
-            )
-            if result.returncode != 0:
-                print(f"  [ERROR] download failed for '{dl_name}' (exit {result.returncode})")
-        print("[DOWNLOAD] Done.")
     return albums_done
