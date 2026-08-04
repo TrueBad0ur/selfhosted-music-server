@@ -74,6 +74,57 @@ class DownloadTests(unittest.TestCase):
             0,
         )
 
+    def test_topic_candidate_uses_detailed_artist_and_album_metadata(self):
+        search = {
+            "entries": [{
+                "id": "topic-id", "title": "Track", "duration": 101,
+                "channel": "Release - Topic",
+            }],
+        }
+        detailed = {
+            "id": "topic-id", "title": "Track", "track": "Track",
+            "artist": "Artist, Guest", "artists": ["Artist", "Guest"],
+            "album": "Album", "duration": 100, "channel": "Release - Topic",
+        }
+
+        def fake_run(command, **kwargs):
+            payload = detailed if "-J" in command else search
+            return MagicMock(
+                returncode=0, stdout=__import__("json").dumps(payload), stderr="",
+            )
+
+        with patch("download_music.subprocess.run", side_effect=fake_run):
+            candidates = download_music._youtube_candidates(
+                "Artist", "Track", "Album", expected_duration=100,
+            )
+        self.assertEqual([item["id"] for item in candidates], ["topic-id"])
+        self.assertEqual(candidates[0]["artist"], "Artist, Guest")
+
+    def test_topic_candidate_rejects_wrong_detailed_album(self):
+        search = {
+            "entries": [{
+                "id": "topic-id", "title": "Track", "duration": 100,
+                "channel": "Release - Topic",
+            }],
+        }
+        detailed = {
+            "id": "topic-id", "title": "Track", "artist": "Artist",
+            "album": "Different Album", "duration": 100,
+            "channel": "Release - Topic",
+        }
+
+        def fake_run(command, **kwargs):
+            payload = detailed if "-J" in command else search
+            return MagicMock(
+                returncode=0, stdout=__import__("json").dumps(payload), stderr="",
+            )
+
+        with patch("download_music.subprocess.run", side_effect=fake_run):
+            candidates = download_music._youtube_candidates(
+                "Artist", "Track", "Album", expected_duration=100,
+            )
+        self.assertEqual(candidates, [])
+
     def test_soundcloud_is_used_only_as_validated_fallback(self):
         with tempfile.TemporaryDirectory() as temp:
             destination = Path(temp) / "Artist - Track.mp3"

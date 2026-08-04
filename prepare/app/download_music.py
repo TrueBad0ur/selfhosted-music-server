@@ -129,7 +129,8 @@ def _youtube_candidate_score(
         score = similarity * 90.0
 
     source_text = " ".join(
-        str(candidate.get(key) or "") for key in ("title", "channel", "uploader")
+        str(candidate.get(key) or "")
+        for key in ("title", "channel", "uploader", "artist", "artists", "creator")
     )
     source_keys = title_variants(source_text)
     artist_matches = any(
@@ -143,6 +144,19 @@ def _youtube_candidate_score(
     if artist_key and slug(str(candidate.get("channel") or "")) == artist_key:
         score += 15.0
     return score
+
+
+def _youtube_candidate_details(video_id: str) -> dict:
+    command = [
+        "yt-dlp", "-J", f"https://www.youtube.com/watch?v={video_id}",
+        "--no-playlist", "--extractor-args", "youtube:player_client=android,web",
+        "--quiet", "--no-warnings",
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        return json.loads(result.stdout) if result.returncode == 0 and result.stdout else {}
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 
 def _youtube_candidates(
@@ -169,8 +183,29 @@ def _youtube_candidates(
             continue
         for candidate in data.get("entries") or []:
             video_id = candidate.get("id")
+            if not video_id or video_id in seen:
+                continue
             score = _youtube_candidate_score(artist, title, candidate, expected_duration)
-            if video_id and video_id not in seen and score >= 0:
+            duration = candidate.get("duration")
+            exact_catalog_topic = (
+                score < 0
+                and expected_duration
+                and duration
+                and _title_match_key(str(candidate.get("title") or "")) == _title_match_key(title)
+                and abs(float(duration) - expected_duration)
+                    <= max(3.0, expected_duration * 0.05)
+                and str(candidate.get("channel") or "").endswith(" - Topic")
+            )
+            if exact_catalog_topic:
+                detailed = _youtube_candidate_details(str(video_id))
+                if not album or slug(str(detailed.get("album") or "")) == slug(album):
+                    detailed_score = _youtube_candidate_score(
+                        artist, title, detailed, expected_duration
+                    )
+                    if detailed_score >= 0:
+                        candidate = detailed
+                        score = detailed_score
+            if score >= 0:
                 seen.add(video_id)
                 candidate = dict(candidate)
                 candidate["_download_url"] = f"https://www.youtube.com/watch?v={video_id}"

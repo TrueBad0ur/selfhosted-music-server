@@ -107,6 +107,49 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(info["tracks"], ["One", "Two"])
         self.assertEqual(info["durations"], [60.0, 70.0])
 
+    def test_deezer_album_accepts_alias_confirmed_by_track_credit(self):
+        search = {
+            "data": [
+                {"id": 42, "title": "Rastafaray", "artist": {"name": "Артем Тото"}},
+            ],
+        }
+        detail = {
+            "release_date": "2017-11-21",
+            "nb_tracks": 2,
+            "tracks": {
+                "data": [
+                    {"title": "Urban", "artist": {"name": "Артем Тото"}, "duration": 188},
+                    {"title": "Rastafaray", "artist": {"name": "Тото"}, "duration": 289},
+                ],
+            },
+        }
+        with patch("metadata._json_request", side_effect=[search, detail]):
+            info = metadata.deezer_album_info("Тото", "Rastafaray")
+        self.assertEqual(info["tracks"], ["Urban", "Rastafaray"])
+
+    def test_deezer_album_rejects_unrelated_same_title_artist(self):
+        search = {
+            "data": [
+                {"id": 42, "title": "Album", "artist": {"name": "Unrelated Artist"}},
+            ],
+        }
+        detail = {
+            "tracks": {
+                "data": [
+                    {"title": "Track", "artist": {"name": "Unrelated Artist"}},
+                ],
+            },
+        }
+        with patch("metadata._json_request", side_effect=[search, detail]):
+            info = metadata.deezer_album_info("Artist", "Album")
+        self.assertEqual(info["tracks"], [])
+
+    def test_tracklist_similarity_accepts_seventy_percent_ordered_subset(self):
+        short = ["Three", "Four", "Five", "Six", "Eight", "Nine", "Ten"]
+        complete = ["One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
+        self.assertEqual(metadata._tracklist_similarity(short, complete), 0.7)
+        self.assertEqual(metadata._tracklist_similarity(list(reversed(short)), complete), 0.0)
+
     def test_verified_album_requires_catalog_consensus(self):
         base = {
             "artist": "Artist", "name": "Album", "year": "2020",

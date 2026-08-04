@@ -379,17 +379,37 @@ def itunes_album_info(artist: str, album: str) -> dict:
 def deezer_album_info(artist: str, album: str) -> dict:
     query = urllib.parse.urlencode({"q": f'artist:"{artist}" album:"{album}"', "limit": 25})
     search = _json_request(f"https://api.deezer.com/search/album?{query}")
+    candidates = [
+        item for item in search.get("data", [])
+        if slug(item.get("title", "")) == slug(album)
+    ]
     match = next(
         (
-            item for item in search.get("data", [])
+            item for item in candidates
             if slug((item.get("artist") or {}).get("name", "")) == slug(artist)
-            and slug(item.get("title", "")) == slug(album)
         ),
         None,
     )
+    detail = {}
+    if not match:
+        requested_artist = slug(artist)
+        for candidate in candidates:
+            candidate_detail = _json_request(
+                f"https://api.deezer.com/album/{candidate.get('id')}"
+            )
+            songs = list((candidate_detail.get("tracks") or {}).get("data") or [])
+            track_artist_slugs = {
+                slug((song.get("artist") or {}).get("name", ""))
+                for song in songs
+            }
+            if requested_artist and requested_artist in track_artist_slugs:
+                match = candidate
+                detail = candidate_detail
+                break
     if not match:
         return {"tracks": [], "durations": [], "artists": [], "year": "", "cover_url": ""}
-    detail = _json_request(f"https://api.deezer.com/album/{match.get('id')}")
+    if not detail:
+        detail = _json_request(f"https://api.deezer.com/album/{match.get('id')}")
     tracks_page = detail.get("tracks") or {}
     songs = list(tracks_page.get("data") or [])
     next_url = tracks_page.get("next")
@@ -517,9 +537,6 @@ def _tracklist_similarity(left: list[str], right: list[str]) -> float:
             if relaxed_title_variants(left_title) & relaxed_title_variants(right_title)
         )
         return matched / len(left)
-    if abs(len(left) - len(right)) != 1:
-        return 0.0
-
     shorter, longer = (left, right) if len(left) < len(right) else (right, left)
     longer_index = 0
     for shorter_title in shorter:

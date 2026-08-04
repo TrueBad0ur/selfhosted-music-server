@@ -40,14 +40,14 @@ class WebApiTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def test_health(self):
-        response = self.client.get("/api/health")
+        response = self.client.get("/tools/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["status"], "ok")
 
     def test_download_validates_payload(self):
-        self.assertEqual(self.client.post("/api/download", json={}).status_code, 400)
+        self.assertEqual(self.client.post("/tools/api/download", json={}).status_code, 400)
         with patch.object(self.web, "_submit", return_value="job"):
-            response = self.client.post("/api/download", json={"artist": "A", "album": "B"})
+            response = self.client.post("/tools/api/download", json={"artist": "A", "album": "B"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["job_id"], "job")
 
@@ -70,19 +70,19 @@ class WebApiTests(unittest.TestCase):
 
     def test_prepare_rejects_multiple_scopes(self):
         response = self.client.post(
-            "/api/prepare/fix",
+            "/tools/api/prepare/fix",
             json={"encoding_only": True, "artists_only": True},
         )
         self.assertEqual(response.status_code, 400)
 
     def test_incoming_path_traversal_is_rejected(self):
-        response = self.client.get("/api/incoming/..%2Fsecret.mp3")
+        response = self.client.get("/tools/api/incoming/..%2Fsecret.mp3")
         self.assertEqual(response.status_code, 404)
 
     def test_upload_rejects_non_audio(self):
         from io import BytesIO
         response = self.client.post(
-            "/api/upload",
+            "/tools/api/upload",
             data={"file": (BytesIO(b"no"), "bad.txt")},
             content_type="multipart/form-data",
         )
