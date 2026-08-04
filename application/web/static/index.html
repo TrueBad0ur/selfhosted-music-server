@@ -32,8 +32,8 @@ nav button.active { background: var(--card); color: var(--text); border-color: v
 .tab { display: none; padding: 24px; max-width: 1100px; margin: 0 auto; }
 .tab.active { display: block; }
 
-.row { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; }
-input[type=text] { flex: 1; background: var(--card); border: 1px solid var(--border); border-radius: 7px; padding: 9px 13px; color: var(--text); font-size: 13px; outline: none; }
+.row { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
+input[type=text] { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--border); border-radius: 7px; padding: 9px 13px; color: var(--text); font-size: 13px; outline: none; }
 input[type=text]:focus { border-color: var(--accent); }
 input[type=text]::placeholder { color: var(--muted); }
 .btn { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 9px 16px; cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap; transition: opacity .15s; }
@@ -167,6 +167,16 @@ input[type=text]::placeholder { color: var(--muted); }
 .miss-tracks.open { display: block; }
 .miss-track-row { display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px 32px; border-bottom: 1px solid #1a1a1a; font-size: 13px; color: #bbb; }
 .miss-track-row:last-child { border-bottom: none; }
+
+/* mobile: header's h1 + tabs + rescan button no longer fit on one row */
+@media (max-width: 640px) {
+  header { flex-wrap: wrap; row-gap: 8px; padding: 10px 16px; }
+  header h1 { order: 1; font-size: 14px; }
+  #hdr-rescan, #st-hdr-rescan { order: 2; }
+  nav { order: 3; flex: 1 1 100%; margin-left: 0; gap: 2px; }
+  nav button { padding: 5px 7px; font-size: 11.5px; }
+  .tab { padding: 16px; }
+}
 </style>
 </head>
 <body>
@@ -335,7 +345,7 @@ async function doSearch() {
   document.getElementById('albums-panel').style.display='none';
   _albumState = {};
   try {
-    const r = await fetch(`/api/search/artists?q=${encodeURIComponent(q)}`);
+    const r = await fetch(`api/search/artists?q=${encodeURIComponent(q)}`);
     const data = await r.json();
     clrSt('st-search');
     if (!data.length) { setSt('st-search','','No results'); return; }
@@ -359,7 +369,7 @@ async function loadAlbums(artist) {
   setSt('st-albs','loading','Loading albums…');
   document.getElementById('alb-list').innerHTML='';
   try {
-    const r = await fetch(`/api/artist/${encodeURIComponent(artist)}/albums`);
+    const r = await fetch(`api/artist/${encodeURIComponent(artist)}/albums`);
     const albums = await r.json();
     clrSt('st-albs');
     if (!albums.length) { setSt('st-albs','','No popular albums found'); return; }
@@ -422,7 +432,7 @@ async function toggleAlbum(key) {
     const timer = setTimeout(()=>ctrl.abort(), 15000);
     try {
       const r = await fetch(
-        `/api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
+        `api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
         {signal: ctrl.signal}
       );
       clearTimeout(timer);
@@ -470,11 +480,11 @@ async function dlTrack(tkey, btn) {
   const st = document.getElementById('tst-'+tkey);
   if(st){st.className='track-st running';st.textContent='queued';}
   try {
-    const r = await fetch('/api/download/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,title,album})});
+    const r = await fetch('api/download/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,title,album})});
     const {job_id}=await r.json();
     startPoll();
     const iv = setInterval(async()=>{
-      const jr=await fetch(`/api/jobs/${job_id}`);
+      const jr=await fetch(`api/jobs/${job_id}`);
       const j=await jr.json();
       if(st){st.className='track-st '+j.status;st.textContent=j.status==='running'?'…':j.status==='done'?'✓':'✗';}
       if(j.status!=='running'){
@@ -496,11 +506,11 @@ async function dlAlbum(key, btn) {
   const st=document.getElementById('dlst-'+key);
   if(st){st.className='dl-status running';st.textContent='queued';}
   try {
-    const r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
+    const r=await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
     const {job_id}=await r.json();
     startPoll();
     const iv=setInterval(async()=>{
-      const jr=await fetch(`/api/jobs/${job_id}`);
+      const jr=await fetch(`api/jobs/${job_id}`);
       const j=await jr.json();
       if(st){st.className='dl-status '+j.status;st.textContent=j.status==='running'?'downloading…':j.status==='done'?'✓':'✗';}
       if(j.status!=='running'){
@@ -537,7 +547,7 @@ async function startAnalysis() {
   prog.innerHTML = '<div class="spinner"></div>Starting…';
   if (_analysisTimer) clearInterval(_analysisTimer);
   try {
-    const r = await fetch('/api/library/analyze', {method: 'POST'});
+    const r = await fetch('api/library/analyze', {method: 'POST'});
     const {job_id} = await r.json();
     _analysisJobId = job_id;
     _analysisTimer = setInterval(pollAnalysis, 3000);
@@ -551,7 +561,7 @@ async function startAnalysis() {
 async function pollAnalysis() {
   if (!_analysisJobId) return;
   try {
-    const r = await fetch(`/api/library/analysis/${_analysisJobId}`);
+    const r = await fetch(`api/library/analysis/${_analysisJobId}`);
     const data = await r.json();
     const p = data.progress || {};
     const prog = document.getElementById('analysis-progress');
@@ -614,11 +624,11 @@ async function fillAlbum(key) {
   btn.disabled = true; btn.textContent = '…';
   if(st){st.textContent='queued';st.style.color='var(--warn)';}
   try {
-    const resp = await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
+    const resp = await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
     const {job_id} = await resp.json();
     startPoll();
     const iv = setInterval(async () => {
-      const jr = await fetch(`/api/jobs/${job_id}`);
+      const jr = await fetch(`api/jobs/${job_id}`);
       const j = await jr.json();
       if(st){st.textContent=j.status==='running'?'…':j.status==='done'?'✓':'✗';st.style.color=j.status==='done'?'var(--success)':j.status==='error'?'var(--error)':'var(--warn)';}
       if(j.status!=='running'){clearInterval(iv);btn.disabled=false;btn.textContent='↓ Fill';}
@@ -635,7 +645,7 @@ async function fillAll() {
   for (let i = 0; i < _analysisCount; i++) {
     const {artist, album} = _analysisMeta['miss'+i] || {};
     if (!artist) continue;
-    await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
+    await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
   }
   startPoll();
   btn.disabled = false; btn.textContent = '↓ Fill all missing';
@@ -647,7 +657,7 @@ async function loadLib(force=false) {
   if(!force&&_libData.length){renderLib();return;}
   setSt('st-lib','loading','Loading library…');
   try{
-    const r=await fetch('/api/library');
+    const r=await fetch('api/library');
     _libData=await r.json();
     clrSt('st-lib');
     renderLib();
@@ -710,7 +720,7 @@ async function checkAlbumMissing(akey, meta) {
   if (!btn) return;
   btn.disabled = true; btn.textContent = '…';
   try {
-    const r = await fetch(`/api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
+    const r = await fetch(`api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
     const data = await r.json();
     const missing = data.filter(t => !t.on_disk);
     const latEl = document.getElementById('lat-'+akey);
@@ -752,7 +762,7 @@ async function toggleLibAlbum(akey, meta) {
   const timer = setTimeout(()=>ctrl.abort(), 15000);
   try{
     const r = await fetch(
-      `/api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
+      `api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
       {signal: ctrl.signal}
     );
     clearTimeout(timer);
@@ -798,11 +808,11 @@ async function libFillAlbum(akey, artist, album, btn) {
   btn.disabled = true; btn.textContent = '…';
   if(st){st.textContent='queued';st.style.color='var(--warn)';}
   try {
-    const resp = await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
+    const resp = await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
     const {job_id} = await resp.json();
     startPoll();
     const iv = setInterval(async()=>{
-      const jr=await fetch(`/api/jobs/${job_id}`); const j=await jr.json();
+      const jr=await fetch(`api/jobs/${job_id}`); const j=await jr.json();
       if(st){st.textContent=j.status==='running'?'…':j.status==='done'?'✓':'✗';st.style.color=j.status==='done'?'var(--success)':j.status==='error'?'var(--error)':'var(--warn)';}
       if(j.status!=='running'){clearInterval(iv);btn.disabled=false;}
     },2000);
@@ -815,7 +825,7 @@ async function libFillAlbum(akey, artist, album, btn) {
 // ── Jobs ───────────────────────────────────────────────────────────────────
 async function loadJobs() {
   try {
-    const r=await fetch('/api/jobs');
+    const r=await fetch('api/jobs');
     const jobs=await r.json();
     const running=jobs.filter(j=>j.status==='running').length;
     const btn=document.getElementById('nav-downloads');
@@ -830,7 +840,7 @@ async function loadJobs() {
 }
 
 async function renderJobs(jobs) {
-  if(!jobs){const r=await fetch('/api/jobs');jobs=await r.json();}
+  if(!jobs){const r=await fetch('api/jobs');jobs=await r.json();}
   const list=document.getElementById('jobs-list');
   if(!jobs.length){list.innerHTML='<div class="empty">No downloads yet</div>';return;}
   list.innerHTML='';
@@ -856,8 +866,8 @@ function toggleJob(jid){
   l.classList.toggle('open'); _jobExp[jid]=l.classList.contains('open');
   if(l.classList.contains('open'))l.scrollTop=l.scrollHeight;
 }
-async function delJob(e,jid){e.stopPropagation();await fetch(`/api/jobs/${jid}`,{method:'DELETE'});loadJobs();}
-async function clearDone(){await fetch('/api/jobs/clear',{method:'POST'});loadJobs();}
+async function delJob(e,jid){e.stopPropagation();await fetch(`api/jobs/${jid}`,{method:'DELETE'});loadJobs();}
+async function clearDone(){await fetch('api/jobs/clear',{method:'POST'});loadJobs();}
 function startPoll(){if(!_pollTimer)_pollTimer=setInterval(loadJobs,2000);}
 
 // ── Cleanup ────────────────────────────────────────────────────────────────
@@ -871,11 +881,11 @@ async function runPreview() {
   const out=document.getElementById('preview-out');
   out.classList.add('open'); out.textContent='';
   try{
-    const r=await fetch('/api/prepare/preview');
+    const r=await fetch('api/prepare/preview');
     const {job_id}=await r.json();
     _previewJobId=job_id;
     const iv=setInterval(async()=>{
-      const jr=await fetch(`/api/jobs/${job_id}`);
+      const jr=await fetch(`api/jobs/${job_id}`);
       const j=await jr.json();
       out.textContent=j.log.join('\n');
       out.scrollTop=out.scrollHeight;
@@ -896,7 +906,7 @@ async function runFix(flags) {
   setSt('st-preview','loading','Applying fixes…');
   document.getElementById('apply-actions').style.display='none';
   try{
-    await fetch('/api/prepare/fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    await fetch('api/prepare/fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     clrSt('st-preview');
     tab('downloads');
     startPoll();
@@ -919,7 +929,7 @@ async function doUpload(files) {
   for(const f of files) fd.append('file',f);
   await new Promise(res=>{
     const xhr=new XMLHttpRequest();
-    xhr.open('POST','/api/upload');
+    xhr.open('POST','api/upload');
     xhr.upload.onprogress=e=>{if(e.lengthComputable)fill.style.width=(e.loaded/e.total*100)+'%';};
     xhr.onload=()=>{
       prog.style.display='none';
@@ -941,7 +951,7 @@ async function loadIncoming() {
   const list=document.getElementById('incoming-list');
   list.innerHTML='<div class="st" style="padding:12px"><div class="spinner"></div>Loading…</div>';
   try {
-    const r=await fetch('/api/incoming');
+    const r=await fetch('api/incoming');
     const files=await r.json();
     if(!files.length){list.innerHTML='<div class="st" style="padding:12px">No staged files</div>';return;}
     list.innerHTML=files.map((f,i)=>`
@@ -951,7 +961,7 @@ async function loadIncoming() {
         <span style="color:${f.status==='ready'?'var(--success)':'var(--error)'}">
           ${f.status==='ready'?esc(f.artist+' / '+f.album):esc(f.error)}
         </span>
-        <a class="btn xs secondary" href="/api/incoming/${encodeURIComponent(f.name)}">Get</a>
+        <a class="btn xs secondary" href="api/incoming/${encodeURIComponent(f.name)}">Get</a>
         <button class="btn xs secondary" onclick="deleteIncoming('${encodeURIComponent(f.name)}')">×</button>
       </div>`).join('');
   } catch(e) {
@@ -960,7 +970,7 @@ async function loadIncoming() {
 }
 
 async function deleteIncoming(encodedName) {
-  const r=await fetch('/api/incoming/'+encodedName,{method:'DELETE'});
+  const r=await fetch('api/incoming/'+encodedName,{method:'DELETE'});
   if(!r.ok){setSt('st-upload','error','Delete failed');return;}
   loadIncoming();
 }
@@ -971,7 +981,7 @@ async function publishIncoming(bypass) {
   const button=document.getElementById(bypass?'bypass-btn':'publish-btn');
   button.disabled=true;
   try {
-    const r=await fetch('/api/incoming/publish',{
+    const r=await fetch('api/incoming/publish',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({names,bypass})
     });
@@ -990,7 +1000,7 @@ async function doRescan() {
   ['rescan-btn','hdr-rescan'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=true;});
   ['st-rescan','st-hdr-rescan'].forEach(id=>setSt(id,'loading','scanning…'));
   try{
-    await fetch('/api/rescan',{method:'POST'});
+    await fetch('api/rescan',{method:'POST'});
     ['st-rescan','st-hdr-rescan'].forEach(id=>setSt(id,'ok','✓'));
     setTimeout(()=>['st-hdr-rescan'].forEach(id=>clrSt(id)),3000);
   }catch(e){

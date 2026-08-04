@@ -9,12 +9,14 @@ import re
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, redirect, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 PREPARE_APP = os.environ.get("PREPARE_APP", "/prepare_app")
@@ -45,8 +47,6 @@ app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", str(2 
 MUSIC_DIR = Path(os.environ.get("MUSIC_DIR", "/music"))
 INCOMING_DIR = Path(os.environ.get("INCOMING_DIR", "/incoming"))
 LASTFM_KEY = os.environ.get("LASTFM_KEY") or os.environ.get("LASTFM_APIKEY", "")
-WEB_USERNAME = os.environ.get("WEB_USERNAME", "")
-WEB_PASSWORD = os.environ.get("WEB_PASSWORD", "")
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -59,11 +59,8 @@ _CACHE_TTL = 60
 
 @app.before_request
 def require_auth():
-    if request.path == "/api/health" or not WEB_USERNAME:
-        return None
-    auth = request.authorization
-    if not auth or auth.username != WEB_USERNAME or auth.password != WEB_PASSWORD:
-        return ("Authentication required", 401, {"WWW-Authenticate": 'Basic realm="Music"'})
+    # Access is gated upstream by nginx + oauth2-proxy (Google SSO). This container
+    # is not published on the host directly, so only trusted proxy traffic reaches here.
     return None
 
 
@@ -281,17 +278,17 @@ def _run_analysis(job_id: str):
     _finish(job_id, True)
 
 
-@app.route("/")
+@app.route("/tools/")
 def index():
     return send_from_directory("static", "index.html")
 
 
-@app.route("/api/health")
+@app.route("/tools/api/health")
 def health():
     return jsonify({"status": "ok", "music_dir": MUSIC_DIR.is_dir(), "incoming_dir": INCOMING_DIR.is_dir()})
 
 
-@app.route("/api/search/artists")
+@app.route("/tools/api/search/artists")
 def search_artists_route():
     query = request.args.get("q", "").strip()
     if len(query) < 2:
@@ -306,7 +303,7 @@ def search_artists_route():
     ])
 
 
-@app.route("/api/artist/<path:artist>/albums")
+@app.route("/tools/api/artist/<path:artist>/albums")
 def artist_albums(artist: str):
     studios, singles = popular_album_entries(artist, LASTFM_KEY)
     artist_dir = find_named_dir(MUSIC_DIR, artist)
@@ -324,7 +321,7 @@ def artist_albums(artist: str):
     ])
 
 
-@app.route("/api/album/tracks")
+@app.route("/tools/api/album/tracks")
 def album_tracks():
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
@@ -348,12 +345,12 @@ def album_tracks():
     ])
 
 
-@app.route("/api/library")
+@app.route("/tools/api/library")
 def library():
     return jsonify(_build_library())
 
 
-@app.route("/api/download", methods=["POST"])
+@app.route("/tools/api/download", methods=["POST"])
 def download():
     body = request.get_json(silent=True) or {}
     artist, album = str(body.get("artist", "")).strip(), str(body.get("album", "")).strip()
@@ -363,7 +360,7 @@ def download():
     return jsonify({"job_id": _submit(label, _run_download, artist, album), "label": label})
 
 
-@app.route("/api/download/track", methods=["POST"])
+@app.route("/tools/api/download/track", methods=["POST"])
 def download_track():
     body = request.get_json(silent=True) or {}
     artist = str(body.get("artist", "")).strip()
@@ -375,7 +372,7 @@ def download_track():
     return jsonify({"job_id": _submit(label, _run_download_track, artist, title, album), "label": label})
 
 
-@app.route("/api/jobs")
+@app.route("/tools/api/jobs")
 def list_jobs():
     with _jobs_lock:
         jobs = [
@@ -392,7 +389,7 @@ def list_jobs():
     return jsonify(jobs)
 
 
-@app.route("/api/jobs/<job_id>")
+@app.route("/tools/api/jobs/<job_id>")
 def get_job(job_id: str):
     with _jobs_lock:
         job = _jobs.get(job_id)
@@ -408,7 +405,7 @@ def get_job(job_id: str):
     return jsonify(payload)
 
 
-@app.route("/api/jobs/<job_id>", methods=["DELETE"])
+@app.route("/tools/api/jobs/<job_id>", methods=["DELETE"])
 def delete_job(job_id: str):
     with _jobs_lock:
         job = _jobs.get(job_id)
@@ -418,7 +415,7 @@ def delete_job(job_id: str):
     return jsonify({"ok": True})
 
 
-@app.route("/api/jobs/clear", methods=["POST"])
+@app.route("/tools/api/jobs/clear", methods=["POST"])
 def clear_jobs():
     with _jobs_lock:
         finished = [job_id for job_id, job in _jobs.items() if job["status"] != "running"]
@@ -427,12 +424,12 @@ def clear_jobs():
     return jsonify({"cleared": len(finished)})
 
 
-@app.route("/api/prepare/preview")
+@app.route("/tools/api/prepare/preview")
 def prepare_preview():
     return jsonify({"job_id": _submit("prepare dry-run", _run_prepare, [], hidden=True)})
 
 
-@app.route("/api/prepare/fix", methods=["POST"])
+@app.route("/tools/api/prepare/fix", methods=["POST"])
 def prepare_fix():
     body = request.get_json(silent=True) or {}
     flags = ["--fix"]
@@ -452,7 +449,7 @@ def prepare_fix():
     return jsonify({"job_id": _submit(label, _run_prepare, flags), "label": label})
 
 
-@app.route("/api/upload", methods=["POST"])
+@app.route("/tools/api/upload", methods=["POST"])
 def upload():
     files = request.files.getlist("file")
     if not files:
@@ -484,12 +481,12 @@ def upload():
     return jsonify({"staged": staged, "saved": [item["name"] for item in staged if item["status"] != "error"]})
 
 
-@app.route("/api/incoming")
+@app.route("/tools/api/incoming")
 def incoming():
     return jsonify(list_incoming(INCOMING_DIR))
 
 
-@app.route("/api/incoming/publish", methods=["POST"])
+@app.route("/tools/api/incoming/publish", methods=["POST"])
 def publish_staged():
     body = request.get_json(silent=True) or {}
     names = body.get("names")
@@ -502,7 +499,7 @@ def publish_staged():
     return jsonify({"job_id": _submit(label, _run_intake, names, bypass), "label": label})
 
 
-@app.route("/api/incoming/<path:name>", methods=["GET", "DELETE"])
+@app.route("/tools/api/incoming/<path:name>", methods=["GET", "DELETE"])
 def incoming_file(name: str):
     try:
         path = resolve_incoming(INCOMING_DIR, name)
@@ -514,7 +511,7 @@ def incoming_file(name: str):
     return send_from_directory(INCOMING_DIR, path.name, as_attachment=True)
 
 
-@app.route("/api/library/analyze", methods=["POST"])
+@app.route("/tools/api/library/analyze", methods=["POST"])
 def library_analyze():
     job_id = _new_job("Library analysis", hidden=True)
     _analysis_store[job_id] = {"results": [], "progress": {}}
@@ -522,7 +519,7 @@ def library_analyze():
     return jsonify({"job_id": job_id})
 
 
-@app.route("/api/library/analysis/<job_id>")
+@app.route("/tools/api/library/analysis/<job_id>")
 def library_analysis_result(job_id: str):
     store = _analysis_store.get(job_id)
     if not store:
@@ -539,10 +536,59 @@ def library_analysis_result(job_id: str):
     })
 
 
-@app.route("/api/rescan", methods=["POST"])
+@app.route("/tools/api/rescan", methods=["POST"])
 def rescan():
     ok, message = trigger_navidrome_rescan("music-web-manual")
     return jsonify({"ok": ok, "message": message}), 200 if ok else 502
+
+
+_APP_CONFIG_RE = re.compile(r'window\.__APP_CONFIG__\s*=\s*"((?:[^"\\]|\\.)*)"')
+
+
+@app.route("/tools/oauth-handoff")
+def oauth_handoff():
+    """Hands a Google-authenticated session off to the Tempo Android app.
+
+    Navidrome computes a real Subsonic token/salt for the ExtAuth'd user and
+    embeds it in the index page it serves for that same Remote-User header
+    (see server/serve_index.go upstream). Re-fetch that page server-side,
+    pull the token out, and bounce the browser to a custom URI scheme that
+    Tempo registers an intent-filter for.
+    """
+    remote_user = request.headers.get("Remote-User", "")
+    if not remote_user:
+        return "No authenticated session", 401
+
+    req = urllib.request.Request(
+        "http://navidrome:4533/app/", headers={"Remote-User": remote_user}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            html = r.read().decode("utf-8", "replace")
+    except Exception as e:
+        return f"Could not reach Navidrome: {e}", 502
+
+    m = _APP_CONFIG_RE.search(html)
+    if not m:
+        return "Could not find Navidrome auth config", 502
+
+    try:
+        config = json.loads(json.loads('"' + m.group(1) + '"'))
+    except Exception as e:
+        return f"Could not parse Navidrome auth config: {e}", 502
+
+    auth = config.get("auth") or {}
+    if not auth.get("subsonicToken"):
+        return "Navidrome did not return a Subsonic token for this session", 502
+
+    scheme = request.headers.get("X-Forwarded-Proto", request.scheme)
+    params = urllib.parse.urlencode({
+        "server": f"{scheme}://{request.host}",
+        "username": auth["username"],
+        "token": auth["subsonicToken"],
+        "salt": auth["subsonicSalt"],
+    })
+    return redirect(f"tempo://oauth-callback?{params}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.cappielloantonio.tempo",
+      "sha256_cert_fingerprints": [
+        "29:01:68:DF:CC:F3:F0:69:7E:75:4D:15:EB:F4:77:5C:87:67:8A:93:C0:35:89:08:5C:22:E7:55:39:98:28:51"
+      ]
+    }
+  }
+]
