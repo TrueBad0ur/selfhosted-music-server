@@ -550,8 +550,14 @@ def _tracklist_similarity(left: list[str], right: list[str]) -> float:
     return len(shorter) / len(longer)
 
 
-def verified_album_info(artist: str, album: str, api_key: str, delay: float = 0) -> dict:
-    """Resolve an album only when at least two independent catalogs agree."""
+def verified_album_info(
+    artist: str,
+    album: str,
+    api_key: str,
+    delay: float = 0,
+    preferred_source: str | None = None,
+) -> dict:
+    """Prefer catalog consensus, but allow one exact catalog as a fallback."""
     info = album_info(artist, album, api_key, delay)
     itunes = itunes_album_info(info.get("artist") or artist, info.get("name") or album)
     deezer = deezer_album_info(info.get("artist") or artist, info.get("name") or album)
@@ -574,31 +580,73 @@ def verified_album_info(artist: str, album: str, api_key: str, delay: float = 0)
     catalogs = {name: tracks for name, tracks in catalogs.items() if tracks}
 
     priority = ("lastfm", "deezer", "itunes", "musicbrainz", "fourwords")
+    info["catalog_choices"] = {
+        source: catalogs[source] for source in priority if source in catalogs
+    }
+    info["selection_required"] = False
+    info["single_source"] = False
+    info["selected_by_user"] = False
     consensus = []
-    for source in priority:
-        tracks = catalogs.get(source)
-        if not tracks:
-            continue
-        agreeing = [
-            other for other, other_tracks in catalogs.items()
-            if other != source and _tracklist_similarity(tracks, other_tracks) >= 0.70
-        ]
-        if agreeing:
-            consensus = [source, *agreeing]
-            selected_source = max(
-                consensus,
-                key=lambda name: (len(catalogs[name]), -priority.index(name)),
+    selected_source = ""
+
+    if preferred_source:
+        selected_source = next(
+            (
+                source for source in priority
+                if source in catalogs and source.casefold() == preferred_source.casefold()
+            ),
+            "",
+        )
+        if not selected_source:
+            available = ", ".join(info["catalog_choices"]) or "none"
+            info["tracks"] = []
+            info["error"] = (
+                f"catalog source {preferred_source!r} is unavailable; available: {available}"
             )
+            info["verified_by"] = []
+            return info
+        consensus = [selected_source]
+        info["tracks"] = catalogs[selected_source]
+        info["selected_by_user"] = True
+    else:
+        for source in priority:
+            tracks = catalogs.get(source)
+            if not tracks:
+                continue
+            agreeing = [
+                other for other, other_tracks in catalogs.items()
+                if other != source and _tracklist_similarity(tracks, other_tracks) >= 0.70
+            ]
+            if agreeing:
+                consensus = [source, *agreeing]
+                selected_source = max(
+                    consensus,
+                    key=lambda name: (len(catalogs[name]), -priority.index(name)),
+                )
+                info["tracks"] = catalogs[selected_source]
+                break
+
+        if not consensus and len(catalogs) == 1:
+            selected_source = next(source for source in priority if source in catalogs)
+            consensus = [selected_source]
             info["tracks"] = catalogs[selected_source]
-            break
+            info["single_source"] = True
+        elif not consensus and catalogs:
+            counts = ", ".join(
+                f"{name}={len(tracks)}" for name, tracks in info["catalog_choices"].items()
+            )
+            info["tracks"] = []
+            info["error"] = f"album catalog selection required: {counts}"
+            info["verified_by"] = []
+            info["selection_required"] = True
+            return info
+        elif not consensus:
+            info["tracks"] = []
+            info["error"] = "no catalog track lists"
+            info["verified_by"] = []
+            return info
 
-    if not consensus:
-        counts = ", ".join(f"{name}={len(tracks)}" for name, tracks in sorted(catalogs.items()))
-        info["tracks"] = []
-        info["error"] = f"album verification failed: {counts or 'no catalog track lists'}"
-        info["verified_by"] = []
-        return info
-
+    info["selected_source"] = selected_source
     years = [
         year for year in (
             info.get("year", ""), itunes.get("year", ""), deezer.get("year", ""),

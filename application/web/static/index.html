@@ -7,41 +7,49 @@
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 :root {
-  --bg:      #0f0f0f;
+  --bg:      #121212;
   --surface: #181818;
-  --card:    #1f1f1f;
-  --border:  #2a2a2a;
-  --text:    #e0e0e0;
-  --muted:   #666;
-  --accent:  #3b82f6;
-  --success: #22c55e;
-  --error:   #ef4444;
-  --warn:    #f59e0b;
+  --card:    #181818;
+  --border:  #282828;
+  --row:     #1d1d1d;
+  --deep:    #000;
+  --text:    #fff;
+  --muted:   #b3b3b3;
+  --accent:  #1db954;
+  --accent-light: #62ec83;
+  --accent-dark:  #008827;
+  --selected: rgba(29, 185, 84, .13);
+  --success: #1db954;
+  --error:   #f15e6c;
+  --warn:    #f59b23;
 }
-body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; min-height: 100vh; }
+body { background: linear-gradient(#171717 0, var(--bg) 320px) fixed; color: var(--text); font: 14px/1.5 system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif; min-height: 100vh; }
 
-header { display: flex; align-items: center; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--surface); position: sticky; top: 0; z-index: 10; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--border); background: var(--deep); position: sticky; top: 0; z-index: 10; }
 header h1 { font-size: 15px; font-weight: 600; }
 header h1 span { color: var(--accent); }
 nav { display: flex; gap: 4px; margin-left: auto; }
 nav button { background: none; border: 1px solid transparent; border-radius: 6px; padding: 6px 13px; color: var(--muted); cursor: pointer; font-size: 13px; transition: all .15s; }
 nav button:hover { color: var(--text); border-color: var(--border); }
-nav button.active { background: var(--card); color: var(--text); border-color: var(--border); }
+nav button.active { background: var(--border); color: var(--text); border-color: var(--border); }
 .badge { background: var(--accent); color: #fff; border-radius: 10px; padding: 1px 6px; font-size: 11px; margin-left: 5px; }
 
 .tab { display: none; padding: 24px; max-width: 1100px; margin: 0 auto; }
 .tab.active { display: block; }
 
 .row { display: flex; gap: 8px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
-input[type=text] { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--border); border-radius: 7px; padding: 9px 13px; color: var(--text); font-size: 13px; outline: none; }
-input[type=text]:focus { border-color: var(--accent); }
-input[type=text]::placeholder { color: var(--muted); }
-.btn { background: var(--accent); color: #fff; border: none; border-radius: 7px; padding: 9px 16px; cursor: pointer; font-size: 13px; font-weight: 500; white-space: nowrap; transition: opacity .15s; }
-.btn:hover { opacity: .85; }
+input[type=text] { flex: 1; min-width: 0; background: #fff; border: 1px solid #fff; border-radius: 999px; padding: 9px 15px; color: #000; font-size: 13px; outline: none; }
+input[type=text]:focus { border-color: var(--accent-light); box-shadow: 0 0 0 2px var(--accent); }
+input[type=text]::placeholder { color: #6a6a6a; }
+.btn { background: var(--accent); color: #fff; border: 1px solid transparent; border-radius: 999px; padding: 9px 16px; cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; transition: background-color .15s, border-color .15s, transform .15s; }
+.btn:hover { background: var(--accent-dark); transform: scale(1.02); }
 .btn:disabled { opacity: .4; cursor: default; }
-.btn.secondary { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+.btn:disabled:hover { transform: none; }
+.btn.secondary { background: var(--deep); color: var(--text); border-color: var(--muted); }
+.btn.secondary:hover { background: var(--deep); border-color: #fff; }
 .btn.success-btn { background: var(--success); }
 .btn.danger { background: var(--error); }
+.btn.danger:hover { background: #c93646; }
 .btn.sm { padding: 5px 11px; font-size: 12px; }
 .btn.xs { padding: 3px 9px; font-size: 11px; }
 
@@ -51,9 +59,9 @@ input[type=text]::placeholder { color: var(--muted); }
 
 /* artist grid */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 20px; }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 12px; cursor: pointer; transition: border-color .15s; }
-.card:hover { border-color: #444; }
-.card.sel { border-color: var(--accent); background: #1a2030; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 9px; padding: 12px; cursor: pointer; transition: background-color .15s, border-color .15s; }
+.card:hover { background: var(--border); border-color: #535353; }
+.card.sel { border-color: var(--accent); background: var(--selected); }
 .card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 5px; margin-bottom: 8px; background: var(--border); display: block; }
 .card .name { font-weight: 500; font-size: 13px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .card .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
@@ -67,8 +75,8 @@ input[type=text]::placeholder { color: var(--muted); }
 .alb-item { border-bottom: 1px solid var(--border); }
 .alb-item:last-child { border-bottom: none; }
 .alb-hdr { display: flex; align-items: center; gap: 10px; padding: 9px 16px; cursor: pointer; user-select: none; transition: background .1s; }
-.alb-hdr:hover { background: var(--surface); }
-.alb-hdr.open { background: #1a2030; }
+.alb-hdr:hover { background: var(--border); }
+.alb-hdr.open { background: var(--selected); }
 .alb-thumb { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; background: var(--border); flex-shrink: 0; }
 .alb-info { flex: 1; min-width: 0; }
 .alb-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -82,9 +90,9 @@ input[type=text]::placeholder { color: var(--muted); }
 .dl-status.error { color: var(--error); }
 
 /* tracks inside album */
-.alb-tracks { display: none; border-top: 1px solid var(--border); background: #111; }
+.alb-tracks { display: none; border-top: 1px solid var(--border); background: var(--bg); }
 .alb-tracks.open { display: block; }
-.track-row { display: flex; align-items: center; gap: 10px; padding: 7px 16px 7px 22px; border-bottom: 1px solid #1a1a1a; font-size: 13px; }
+.track-row { display: flex; align-items: center; gap: 10px; padding: 7px 16px 7px 22px; border-bottom: 1px solid var(--row); font-size: 13px; }
 .track-row:last-child { border-bottom: none; }
 .track-num { color: var(--muted); font-size: 12px; width: 22px; text-align: right; flex-shrink: 0; }
 .track-title { flex: 1; }
@@ -97,7 +105,7 @@ input[type=text]::placeholder { color: var(--muted); }
 /* library */
 .art-sec { border: 1px solid var(--border); border-radius: 7px; margin-bottom: 4px; overflow: hidden; }
 .art-hdr { display: flex; align-items: center; gap: 9px; padding: 9px 13px; cursor: pointer; background: var(--card); user-select: none; }
-.art-hdr:hover { background: #222; }
+.art-hdr:hover { background: var(--border); }
 .art-hdr .arr { color: var(--muted); font-size: 11px; transition: transform .15s; }
 .art-hdr.open .arr { transform: rotate(90deg); }
 .art-hdr .aname { flex: 1; font-weight: 500; font-size: 13px; }
@@ -106,15 +114,15 @@ input[type=text]::placeholder { color: var(--muted); }
 .art-albs.open { display: block; }
 /* album row inside library artist */
 .lib-alb-hdr { display: flex; align-items: center; gap: 9px; padding: 7px 13px 7px 28px; font-size: 13px; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; }
-.lib-alb-hdr:hover { background: var(--surface); }
-.lib-alb-hdr.open { background: #1a2030; }
+.lib-alb-hdr:hover { background: var(--border); }
+.lib-alb-hdr.open { background: var(--selected); }
 .lib-alb-hdr .arr { color: var(--muted); font-size: 11px; transition: transform .15s; flex-shrink: 0; }
 .lib-alb-hdr.open .arr { transform: rotate(90deg); }
-.lib-alb-hdr .an { flex: 1; color: #aaa; }
+.lib-alb-hdr .an { flex: 1; color: var(--muted); }
 .lib-alb-hdr .at { color: var(--muted); font-size: 12px; }
-.lib-alb-tracks { display: none; background: #111; border-bottom: 1px solid var(--border); }
+.lib-alb-tracks { display: none; background: var(--bg); border-bottom: 1px solid var(--border); }
 .lib-alb-tracks.open { display: block; }
-.lib-track-row { display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px 44px; border-bottom: 1px solid #1a1a1a; font-size: 13px; color: #bbb; }
+.lib-track-row { display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px 44px; border-bottom: 1px solid var(--row); font-size: 13px; color: var(--muted); }
 .lib-track-row:last-child { border-bottom: none; }
 .lib-alb-hdr { flex-wrap: wrap; }
 .lib-track-num { color: var(--muted); font-size: 12px; width: 22px; text-align: right; flex-shrink: 0; }
@@ -127,11 +135,11 @@ input[type=text]::placeholder { color: var(--muted); }
 .job-icon { font-size: 15px; flex-shrink: 0; width: 18px; text-align: center; }
 .job-label { flex: 1; font-size: 13px; font-weight: 500; }
 .job-time { color: var(--muted); font-size: 12px; }
-.job-log { display: none; padding: 10px 13px; border-top: 1px solid var(--border); background: #0a0a0a; font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 280px; overflow-y: auto; color: #999; line-height: 1.6; }
+.job-log { display: none; padding: 10px 13px; border-top: 1px solid var(--border); background: var(--deep); font-family: monospace; font-size: 12px; white-space: pre-wrap; max-height: 280px; overflow-y: auto; color: var(--muted); line-height: 1.6; }
 .job-log.open { display: block; }
 
 /* cleanup */
-.clean-output { background: #0a0a0a; border: 1px solid var(--border); border-radius: 7px; padding: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; color: #aaa; max-height: 400px; overflow-y: auto; line-height: 1.6; margin-top: 12px; display: none; }
+.clean-output { background: var(--deep); border: 1px solid var(--border); border-radius: 7px; padding: 12px; font-family: monospace; font-size: 12px; white-space: pre-wrap; color: var(--muted); max-height: 400px; overflow-y: auto; line-height: 1.6; margin-top: 12px; display: none; }
 .clean-output.open { display: block; }
 .clean-actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
 
@@ -157,15 +165,15 @@ input[type=text]::placeholder { color: var(--muted); }
 .miss-row { border-bottom: 1px solid var(--border); }
 .miss-row:last-child { border-bottom: none; }
 .miss-alb-hdr { display: flex; align-items: center; gap: 9px; padding: 9px 16px; cursor: pointer; transition: background .1s; }
-.miss-alb-hdr:hover { background: var(--surface); }
+.miss-alb-hdr:hover { background: var(--border); }
 .miss-alb-hdr .arr { color: var(--muted); font-size: 11px; transition: transform .15s; flex-shrink: 0; }
 .miss-alb-hdr.open .arr { transform: rotate(90deg); }
 .miss-alb-name { flex: 1; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .miss-badge { background: var(--error); color: #fff; border-radius: 10px; padding: 1px 7px; font-size: 11px; flex-shrink: 0; }
 .miss-ratio { color: var(--muted); font-size: 12px; flex-shrink: 0; }
-.miss-tracks { display: none; background: #111; border-top: 1px solid var(--border); }
+.miss-tracks { display: none; background: var(--bg); border-top: 1px solid var(--border); }
 .miss-tracks.open { display: block; }
-.miss-track-row { display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px 32px; border-bottom: 1px solid #1a1a1a; font-size: 13px; color: #bbb; }
+.miss-track-row { display: flex; align-items: center; gap: 10px; padding: 6px 16px 6px 32px; border-bottom: 1px solid var(--row); font-size: 13px; color: var(--muted); }
 .miss-track-row:last-child { border-bottom: none; }
 
 /* mobile: header's h1 + tabs + rescan button no longer fit on one row */
@@ -336,6 +344,65 @@ function setSt(id, type, text) {
 }
 function clrSt(id){ const el=document.getElementById(id); if(el){el.innerHTML='';el.style.color='';} }
 
+function chooseCatalog(catalogs) {
+  if (!Array.isArray(catalogs) || !catalogs.length) return "";
+  let message = "Available catalog track lists:\n";
+  catalogs.forEach((catalog, sourceIndex) => {
+    message += "\n[" + (sourceIndex + 1) + "] " + catalog.source + " - " + catalog.tracks.length + " track(s)\n";
+    catalog.tracks.forEach((title, trackIndex) => { message += "  " + (trackIndex + 1) + ". " + title + "\n"; });
+  });
+  while (true) {
+    const answer = window.prompt(message + "\nSelect catalog number or source name. Cancel stops the download.", "1");
+    if (answer === null) return "";
+    const value = answer.trim(), number = Number(value);
+    if (Number.isInteger(number) && number >= 1 && number <= catalogs.length) return catalogs[number - 1].source;
+    const matched = catalogs.find(c => c.source.toLowerCase() === value.toLowerCase());
+    if (matched) return matched.source;
+    window.alert("Invalid catalog selection.");
+  }
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 60000) {
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {...options, signal: controller.signal});
+    return {response, data: await response.json()};
+  } finally { clearTimeout(timer); }
+}
+
+async function requestAlbumTracks(artist, album) {
+  let source = "";
+  while (true) {
+    let url = "api/album/tracks?artist=" + encodeURIComponent(artist) + "&album=" + encodeURIComponent(album);
+    if (source) url += "&source=" + encodeURIComponent(source);
+    const {response, data} = await fetchJsonWithTimeout(url);
+    if (response.status === 409 && data.selection_required) {
+      source = chooseCatalog(data.catalogs);
+      if (!source) return null;
+      continue;
+    }
+    if (!response.ok) throw new Error(data.error || "Track lookup failed");
+    return data;
+  }
+}
+
+async function requestAlbumDownload(artist, album) {
+  let catalogSource = "";
+  while (true) {
+    const {response, data} = await fetchJsonWithTimeout("api/download", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({artist, album, catalog_source: catalogSource})
+    });
+    if (response.status === 409 && data.selection_required) {
+      catalogSource = chooseCatalog(data.catalogs);
+      if (!catalogSource) return null;
+      continue;
+    }
+    if (!response.ok) throw new Error(data.error || "Download request failed");
+    return data;
+  }
+}
+
 // ── Search ─────────────────────────────────────────────────────────────────
 async function doSearch() {
   const q = document.getElementById('q').value.trim();
@@ -431,12 +498,9 @@ async function toggleAlbum(key) {
     const ctrl = new AbortController();
     const timer = setTimeout(()=>ctrl.abort(), 15000);
     try {
-      const r = await fetch(
-        `api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
-        {signal: ctrl.signal}
-      );
+      const data = await requestAlbumTracks(artist, album);
       clearTimeout(timer);
-      const data = await r.json();
+      if (!data) throw new Error("Catalog selection cancelled");
       st.tracks = data;
       st.tracksLoaded = true;
       renderTracks(artist, album, key, data);
@@ -506,8 +570,9 @@ async function dlAlbum(key, btn) {
   const st=document.getElementById('dlst-'+key);
   if(st){st.className='dl-status running';st.textContent='queued';}
   try {
-    const r=await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
-    const {job_id}=await r.json();
+    const result = await requestAlbumDownload(artist, album);
+    if (!result) throw new Error("Catalog selection cancelled");
+    const {job_id} = result;
     startPoll();
     const iv=setInterval(async()=>{
       const jr=await fetch(`api/jobs/${job_id}`);
@@ -624,8 +689,9 @@ async function fillAlbum(key) {
   btn.disabled = true; btn.textContent = '…';
   if(st){st.textContent='queued';st.style.color='var(--warn)';}
   try {
-    const resp = await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
-    const {job_id} = await resp.json();
+    const result = await requestAlbumDownload(artist, album);
+    if (!result) throw new Error("Catalog selection cancelled");
+    const {job_id} = result;
     startPoll();
     const iv = setInterval(async () => {
       const jr = await fetch(`api/jobs/${job_id}`);
@@ -645,7 +711,8 @@ async function fillAll() {
   for (let i = 0; i < _analysisCount; i++) {
     const {artist, album} = _analysisMeta['miss'+i] || {};
     if (!artist) continue;
-    await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
+    const result = await requestAlbumDownload(artist, album);
+    if (!result) continue;
   }
   startPoll();
   btn.disabled = false; btn.textContent = '↓ Fill all missing';
@@ -720,8 +787,8 @@ async function checkAlbumMissing(akey, meta) {
   if (!btn) return;
   btn.disabled = true; btn.textContent = '…';
   try {
-    const r = await fetch(`api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
-    const data = await r.json();
+    const data = await requestAlbumTracks(artist, album);
+    if (!data) throw new Error("Catalog selection cancelled");
     const missing = data.filter(t => !t.on_disk);
     const latEl = document.getElementById('lat-'+akey);
     if (latEl) latEl.textContent = `${data.filter(t=>t.on_disk).length}/${data.length} tracks`;
@@ -761,12 +828,9 @@ async function toggleLibAlbum(akey, meta) {
   const ctrl = new AbortController();
   const timer = setTimeout(()=>ctrl.abort(), 15000);
   try{
-    const r = await fetch(
-      `api/album/tracks?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`,
-      {signal: ctrl.signal}
-    );
+    const data = await requestAlbumTracks(artist, album);
     clearTimeout(timer);
-    const data = await r.json();
+    if (!data) throw new Error("Catalog selection cancelled");
     if(!data.length){ tracks.innerHTML=`<div class="tracks-loading" style="color:var(--muted)">No tracks found</div>`; return; }
     const missing = data.filter(t => !t.on_disk);
     const latEl = document.getElementById('lat-'+akey);
@@ -808,8 +872,9 @@ async function libFillAlbum(akey, artist, album, btn) {
   btn.disabled = true; btn.textContent = '…';
   if(st){st.textContent='queued';st.style.color='var(--warn)';}
   try {
-    const resp = await fetch('api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({artist,album})});
-    const {job_id} = await resp.json();
+    const result = await requestAlbumDownload(artist, album);
+    if (!result) throw new Error("Catalog selection cancelled");
+    const {job_id} = result;
     startPoll();
     const iv = setInterval(async()=>{
       const jr=await fetch(`api/jobs/${job_id}`); const j=await jr.json();

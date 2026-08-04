@@ -235,6 +235,22 @@ class DownloadTests(unittest.TestCase):
                 self.assertTrue(download_music.ytdlp_download("Artist", "Track", destination))
             self.assertGreater(destination.stat().st_size, 0)
 
+    def test_cli_catalog_choice_prints_all_tracks_and_selects_number(self):
+        choices = {
+            "lastfm": ["One", "Two"],
+            "deezer": ["First", "Second", "Third"],
+        }
+        stdin = MagicMock()
+        stdin.isatty.return_value = True
+        with patch("download_music.sys.stdin", stdin),              patch("builtins.input", return_value="2"),              patch("sys.stdout", new_callable=io.StringIO) as output:
+            selected = download_music._choose_catalog_source(choices)
+        self.assertEqual(selected, "deezer")
+        text = output.getvalue()
+        self.assertIn("[1] lastfm", text)
+        self.assertIn("1. One", text)
+        self.assertIn("[2] deezer", text)
+        self.assertIn("3. Third", text)
+
     def test_album_is_published_only_after_every_track_succeeds(self):
         with tempfile.TemporaryDirectory() as temp:
             destination = Path(temp) / "Artist" / "Album"

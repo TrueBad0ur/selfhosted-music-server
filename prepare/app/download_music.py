@@ -730,10 +730,59 @@ def cmd_list_artist(args) -> bool:
     return True
 
 
+def _print_catalog_choices(choices: dict[str, list[str]]) -> list[str]:
+    sources = list(choices)
+    print("\n  Available catalog track lists:")
+    for source_index, source in enumerate(sources, 1):
+        tracks = choices[source]
+        print(f"\n  [{source_index}] {source} — {len(tracks)} track(s)")
+        for track_index, title in enumerate(tracks, 1):
+            print(f"      {track_index:>2}. {title}")
+    return sources
+
+
+def _choose_catalog_source(choices: dict[str, list[str]]) -> str:
+    sources = _print_catalog_choices(choices)
+    if not sources:
+        return ""
+    if not sys.stdin.isatty():
+        print(
+            "\n  [ERROR] catalog choice requires an interactive terminal; "
+            "rerun with --catalog-source SOURCE"
+        )
+        return ""
+    while True:
+        answer = input(
+            f"\n  Select catalog [1-{len(sources)}] or q to cancel: "
+        ).strip()
+        if answer.casefold() in {"q", "quit", "cancel"}:
+            return ""
+        if answer.isdigit() and 1 <= int(answer) <= len(sources):
+            return sources[int(answer) - 1]
+        matched = next(
+            (source for source in sources if source.casefold() == answer.casefold()),
+            "",
+        )
+        if matched:
+            return matched
+        print("  Invalid selection.")
+
+
 def cmd_download_album(args) -> bool:
     output_root = Path(args.out)
     print(f"\nLooking up album: {args.artist} — {args.album}")
-    info = verified_album_info(args.artist, args.album, args.lastfm_key, args.delay)
+    catalog_source = getattr(args, "catalog_source", "")
+    info = verified_album_info(
+        args.artist, args.album, args.lastfm_key, args.delay, catalog_source or None
+    )
+    if info.get("selection_required"):
+        selected_source = _choose_catalog_source(info.get("catalog_choices") or {})
+        if not selected_source:
+            return False
+        print(f"\n  Selected catalog: {selected_source}")
+        info = verified_album_info(
+            args.artist, args.album, args.lastfm_key, args.delay, selected_source
+        )
     if info.get("error") and not info.get("tracks"):
         print(f"  [ERROR] metadata lookup failed: {info['error']}")
         return False
@@ -754,7 +803,14 @@ def cmd_download_album(args) -> bool:
 
     print(f"  Album: {album_name} ({info.get('year') or 'year unknown'}) by {artist_name}")
     print(f"  Tracks: {len(info['tracks'])}")
-    print(f"  Verified by: {', '.join(info.get('verified_by') or [])}")
+    sources = ", ".join(info.get("verified_by") or [])
+    if info.get("selected_by_user"):
+        selected_catalog = info.get("selected_source") or sources
+        print(f"  Selected catalog: {selected_catalog}")
+    elif info.get("single_source"):
+        print(f"  Metadata source: {sources} (single-source fallback)")
+    else:
+        print(f"  Verified by: {sources}")
     print(f"  Destination: {destination_dir}")
     existing = _disk_title_slugs(destination_dir)
     existing_relaxed = _disk_title_slugs(destination_dir, relaxed=True)
@@ -881,6 +937,12 @@ def main() -> int:
         "--lastfm-key",
         default=os.environ.get("LASTFM_KEY") or os.environ.get("LASTFM_APIKEY", ""),
         metavar="KEY",
+    )
+    parser.add_argument(
+        "--catalog-source",
+        default="",
+        metavar="SOURCE",
+        help="select a catalog track list when available catalogs conflict",
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--list-albums", action="store_true")

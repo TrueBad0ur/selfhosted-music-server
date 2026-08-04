@@ -46,10 +46,51 @@ class WebApiTests(unittest.TestCase):
 
     def test_download_validates_payload(self):
         self.assertEqual(self.client.post("/tools/api/download", json={}).status_code, 400)
-        with patch.object(self.web, "_submit", return_value="job"):
-            response = self.client.post("/tools/api/download", json={"artist": "A", "album": "B"})
+        resolved = {
+            "tracks": ["One"], "error": None, "selection_required": False,
+            "selected_source": "lastfm",
+        }
+        with patch.object(self.web, "verified_album_info", return_value=resolved),              patch.object(self.web, "_submit", return_value="job") as submit:
+            response = self.client.post(
+                "/tools/api/download", json={"artist": "A", "album": "B"}
+            )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["job_id"], "job")
+        submit.assert_called_once_with(
+            "A — B", self.web._run_download, "A", "B", "lastfm"
+        )
+
+    def test_download_returns_catalog_choices_and_accepts_selection(self):
+        conflict = {
+            "tracks": [], "error": "catalog selection required",
+            "selection_required": True,
+            "catalog_choices": {
+                "lastfm": ["One", "Two"],
+                "deezer": ["First", "Second", "Third"],
+            },
+        }
+        with patch.object(self.web, "verified_album_info", return_value=conflict):
+            response = self.client.post(
+                "/tools/api/download", json={"artist": "A", "album": "B"}
+            )
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertTrue(payload["selection_required"])
+        self.assertEqual(payload["catalogs"][0]["tracks"], ["One", "Two"])
+
+        selected = {
+            "tracks": ["First", "Second", "Third"], "error": None,
+            "selection_required": False, "selected_source": "deezer",
+        }
+        with patch.object(self.web, "verified_album_info", return_value=selected),              patch.object(self.web, "_submit", return_value="job") as submit:
+            response = self.client.post(
+                "/tools/api/download",
+                json={"artist": "A", "album": "B", "catalog_source": "deezer"},
+            )
+        self.assertEqual(response.status_code, 200)
+        submit.assert_called_once_with(
+            "A — B", self.web._run_download, "A", "B", "deezer"
+        )
 
     def test_download_worker_keeps_key_out_of_arguments(self):
         with patch.object(self.web, "_run_command") as runner:

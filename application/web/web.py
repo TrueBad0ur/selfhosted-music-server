@@ -35,6 +35,7 @@ from metadata import (
     slug,
     title_on_disk,
     title_variants,
+    verified_album_info,
 )
 from runtime import trigger_navidrome_rescan
 from tags import _get_tracknum, get_tags
@@ -136,12 +137,17 @@ def _run_command(job_id: str, command: list[str], rescan: bool = False):
     _finish(job_id, ok)
 
 
-def _run_download(job_id: str, artist: str, album: str):
-    _run_command(job_id, [
+def _run_download(
+    job_id: str, artist: str, album: str, catalog_source: str = ""
+):
+    command = [
         sys.executable, f"{PREPARE_APP}/download_music.py",
         "--album", artist, album,
         "--out", str(MUSIC_DIR),
-    ], rescan=True)
+    ]
+    if catalog_source:
+        command.extend(["--catalog-source", catalog_source])
+    _run_command(job_id, command, rescan=True)
 
 
 def _run_download_track(job_id: str, artist: str, title: str, album: str):
@@ -205,10 +211,25 @@ def _disk_titles(album_dir: Path) -> tuple[list[tuple[int, str]], set[str]]:
     return files, variants
 
 
-def _album_tracks(artist: str, album: str) -> tuple[list[str], dict]:
+def _album_tracks(
+    artist: str, album: str, catalog_source: str = ""
+) -> tuple[list[str], dict]:
     clean_album = re.sub(r"^\d{4}\s*-\s*", "", album)
-    info = album_info(artist, clean_album, LASTFM_KEY)
+    info = verified_album_info(
+        artist, clean_album, LASTFM_KEY, preferred_source=catalog_source or None
+    )
     return info.get("tracks", []), info
+
+
+def _catalog_selection_payload(info: dict) -> dict:
+    return {
+        "selection_required": True,
+        "error": info.get("error") or "catalog selection required",
+        "catalogs": [
+            {"source": source, "tracks": tracks}
+            for source, tracks in (info.get("catalog_choices") or {}).items()
+        ],
+    }
 
 
 def _build_library() -> list:
@@ -331,7 +352,10 @@ def album_tracks():
     artist_dir = find_named_dir(MUSIC_DIR, artist)
     album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
     disk_files, disk_slugs = _disk_titles(album_dir) if album_dir else ([], set())
-    tracks, info = _album_tracks(artist, clean_album)
+    catalog_source = request.args.get("source", "").strip()
+    tracks, info = _album_tracks(artist, clean_album, catalog_source)
+    if info.get("selection_required"):
+        return jsonify(_catalog_selection_payload(info)), 409
     if not tracks:
         if info.get("error") and not disk_files:
             return jsonify({"error": str(info["error"])}), 502
@@ -353,11 +377,27 @@ def library():
 @app.route("/tools/api/download", methods=["POST"])
 def download():
     body = request.get_json(silent=True) or {}
-    artist, album = str(body.get("artist", "")).strip(), str(body.get("album", "")).strip()
+    artist = str(body.get("artist", "")).strip()
+    album = str(body.get("album", "")).strip()
+    catalog_source = str(body.get("catalog_source", "")).strip()
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
+
+    info = verified_album_info(
+        artist, album, LASTFM_KEY, preferred_source=catalog_source or None
+    )
+    if info.get("selection_required"):
+        return jsonify(_catalog_selection_payload(info)), 409
+    if info.get("error") and not info.get("tracks"):
+        return jsonify({"error": str(info["error"])}), 422
+
+    selected_source = catalog_source or str(info.get("selected_source") or "")
     label = f"{artist} — {album}"
-    return jsonify({"job_id": _submit(label, _run_download, artist, album), "label": label})
+    return jsonify({
+        "job_id": _submit(label, _run_download, artist, album, selected_source),
+        "label": label,
+        "catalog_source": selected_source,
+    })
 
 
 @app.route("/tools/api/download/track", methods=["POST"])
@@ -588,6 +628,20 @@ def oauth_handoff():
         "token": auth["subsonicToken"],
         "salt": auth["subsonicSalt"],
     })
+    server_id = request.args.get("server_id", "").strip()
+    if server_id:
+        try:
+            params += "&" + urllib.parse.urlencode({
+                "server_id": str(uuid.UUID(server_id)),
+            })
+        except ValueError:
+            return "Invalid server identifier", 400
+
+    server_name = request.args.get("server_name", "").strip()
+    if server_name:
+        params += "&" + urllib.parse.urlencode({
+            "server_name": server_name[:100],
+        })
     return redirect(f"tempo://oauth-callback?{params}")
 
 

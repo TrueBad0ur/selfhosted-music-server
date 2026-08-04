@@ -170,6 +170,26 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(info["cover_url"], "itunes-cover")
         self.assertEqual(info["track_durations"], [61, 71])
 
+    def test_verified_album_allows_one_exact_catalog(self):
+        tracks = ["One", "Two", "Three"]
+        base = {
+            "artist": "Artist", "name": "Album", "year": "2020",
+            "tracks": tracks, "cover_url": "cover", "error": None,
+            "catalogs": {"lastfm": tracks, "musicbrainz": []},
+            "catalog_durations": {"lastfm": [], "musicbrainz": []},
+            "catalog_artists": {"lastfm": [["Artist"]] * 3, "musicbrainz": []},
+        }
+        empty = {
+            "tracks": [], "durations": [], "artists": [],
+            "year": "", "cover_url": "",
+        }
+        with patch("metadata.album_info", return_value=base),              patch("metadata.itunes_album_info", return_value=empty),              patch("metadata.deezer_album_info", return_value=empty),              patch("metadata.fourwords_album_info", return_value=empty):
+            info = metadata.verified_album_info("Artist", "Album", "key")
+        self.assertEqual(info["tracks"], tracks)
+        self.assertEqual(info["verified_by"], ["lastfm"])
+        self.assertTrue(info["single_source"])
+        self.assertIsNone(info["error"])
+
     def test_verified_album_reports_conflicting_catalogs(self):
         base = {
             "artist": "Artist", "name": "Album", "year": "",
@@ -185,7 +205,20 @@ class MetadataTests(unittest.TestCase):
              patch("metadata.fourwords_album_info", return_value=deezer):
             info = metadata.verified_album_info("Artist", "Album", "key")
         self.assertEqual(info["tracks"], [])
-        self.assertIn("verification failed", info["error"])
+        self.assertTrue(info["selection_required"])
+        self.assertEqual(
+            set(info["catalog_choices"]),
+            {"lastfm", "musicbrainz", "itunes"},
+        )
+
+        with patch("metadata.album_info", return_value=base),              patch("metadata.itunes_album_info", return_value=itunes),              patch("metadata.deezer_album_info", return_value=deezer),              patch("metadata.fourwords_album_info", return_value=deezer):
+            selected = metadata.verified_album_info(
+                "Artist", "Album", "key", preferred_source="itunes",
+            )
+        self.assertEqual(selected["tracks"], itunes["tracks"])
+        self.assertEqual(selected["selected_source"], "itunes")
+        self.assertTrue(selected["selected_by_user"])
+        self.assertFalse(selected["selection_required"])
 
     def test_verified_album_allows_catalogs_to_omit_feature_credits(self):
         base = {
