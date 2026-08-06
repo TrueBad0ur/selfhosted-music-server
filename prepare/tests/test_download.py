@@ -256,7 +256,7 @@ class DownloadTests(unittest.TestCase):
             destination = Path(temp) / "Artist" / "Album"
             args = SimpleNamespace(
                 out=temp, artist="Artist", album="Album", dest=str(destination),
-                delay=0, dry_run=False, lastfm_key="key",
+                delay=0, dry_run=False, lastfm_key="key", allow_partial=False, keep_remixes=False,
             )
             info = {
                 "artist": "Artist", "name": "Album", "year": "2020",
@@ -282,7 +282,7 @@ class DownloadTests(unittest.TestCase):
             destination = Path(temp) / "Artist" / "Album"
             args = SimpleNamespace(
                 out=temp, artist="Artist", album="Album", dest=str(destination),
-                delay=0, dry_run=False, lastfm_key="key",
+                delay=0, dry_run=False, lastfm_key="key", allow_partial=False, keep_remixes=False,
             )
             info = {
                 "artist": "Artist", "name": "Album", "year": "",
@@ -307,7 +307,7 @@ class DownloadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             args = SimpleNamespace(
                 out=temp, artist="Artist", album="Album", dest="",
-                delay=0, dry_run=True, lastfm_key="key",
+                delay=0, dry_run=True, lastfm_key="key", allow_partial=False, keep_remixes=False,
             )
             info = {
                 "artist": "Artist", "name": "Album", "year": "2024",

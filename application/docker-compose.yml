@@ -80,6 +80,7 @@ services:
       - ./music:/music
       - ./incoming:/incoming
       - ../prepare/app:/prepare_app:ro
+      - ./data:/navidrome_data
     environment:
       MUSIC_DIR: /music
       INCOMING_DIR: /incoming
@@ -88,6 +89,7 @@ services:
       NAVIDROME_URL: http://navidrome:4533
       NAVIDROME_USER: "${NAVIDROME_USER}"
       NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
+      NAVIDROME_DB_PATH: /navidrome_data/navidrome.db
       MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-2147483648}"
     depends_on:
       - navidrome

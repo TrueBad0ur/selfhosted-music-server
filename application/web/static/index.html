@@ -74,6 +74,7 @@ input[type=text]::placeholder { color: #6a6a6a; }
 /* album accordion */
 .alb-item { border-bottom: 1px solid var(--border); }
 .alb-item:last-child { border-bottom: none; }
+.alb-more-row { display: flex; justify-content: center; padding: 10px 16px; }
 .alb-hdr { display: flex; align-items: center; gap: 10px; padding: 9px 16px; cursor: pointer; user-select: none; transition: background .1s; }
 .alb-hdr:hover { background: var(--border); }
 .alb-hdr.open { background: var(--selected); }
@@ -82,6 +83,8 @@ input[type=text]::placeholder { color: #6a6a6a; }
 .alb-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .alb-pc { font-size: 12px; color: var(--muted); }
 .alb-arr { color: var(--muted); font-size: 11px; transition: transform .15s; flex-shrink: 0; }
+.partial-toggle { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+.partial-toggle input { cursor: pointer; }
 .alb-hdr.open .alb-arr { transform: rotate(90deg); }
 .disk-ok { color: var(--success); font-size: 12px; flex-shrink: 0; }
 .dl-status { font-size: 12px; flex-shrink: 0; }
@@ -274,6 +277,21 @@ input[type=text]::placeholder { color: #6a6a6a; }
       </div>
     </div>
   </div>
+
+  <div class="panel">
+    <div class="panel-hdr"><h3>Navidrome catalog duplicates</h3></div>
+    <div style="padding:14px 16px">
+      <p style="color:var(--muted);font-size:13px">Stray duplicate rows in Navidrome's own database (each pointing at a real file) - usually from overlapping rescans fired right after a fresh publish. A normal rescan doesn't merge them.</p>
+      <div class="clean-actions" style="margin-top:14px">
+        <button class="btn secondary" id="btn-nd-check" onclick="checkNavidromeDupes()">Check duplicates</button>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);cursor:pointer">
+          <input type="checkbox" id="nd-apply-toggle" style="cursor:pointer">Apply fix (remove duplicate rows)
+        </label>
+        <span class="st" id="st-nd" style="margin:0"></span>
+      </div>
+      <div id="nd-out" class="clean-output"></div>
+    </div>
+  </div>
 </div>
 
 <!-- UPLOAD -->
@@ -344,9 +362,9 @@ function setSt(id, type, text) {
 }
 function clrSt(id){ const el=document.getElementById(id); if(el){el.innerHTML='';el.style.color='';} }
 
-function chooseCatalog(catalogs) {
+function chooseCatalog(catalogs, artist, album) {
   if (!Array.isArray(catalogs) || !catalogs.length) return "";
-  let message = "Available catalog track lists:\n";
+  let message = `Available catalog track lists for ${artist} — ${album}:\n`;
   catalogs.forEach((catalog, sourceIndex) => {
     message += "\n[" + (sourceIndex + 1) + "] " + catalog.source + " - " + catalog.tracks.length + " track(s)\n";
     catalog.tracks.forEach((title, trackIndex) => { message += "  " + (trackIndex + 1) + ". " + title + "\n"; });
@@ -377,7 +395,7 @@ async function requestAlbumTracks(artist, album) {
     if (source) url += "&source=" + encodeURIComponent(source);
     const {response, data} = await fetchJsonWithTimeout(url);
     if (response.status === 409 && data.selection_required) {
-      source = chooseCatalog(data.catalogs);
+      source = chooseCatalog(data.catalogs, artist, album);
       if (!source) return null;
       continue;
     }
@@ -386,15 +404,27 @@ async function requestAlbumTracks(artist, album) {
   }
 }
 
-async function requestAlbumDownload(artist, album) {
+// Filesystem-only track listing (no catalog lookup) - fast, for just expanding
+// an album row. Missing-track detection needs requestAlbumTracks() instead.
+async function requestLocalAlbumTracks(artist, album) {
+  const url = "api/album/local-tracks?artist=" + encodeURIComponent(artist) + "&album=" + encodeURIComponent(album);
+  const {response, data} = await fetchJsonWithTimeout(url);
+  if (!response.ok) throw new Error(data.error || "Track lookup failed");
+  return data;
+}
+
+async function requestAlbumDownload(artist, album, allowPartial = false, keepRemixes = false) {
   let catalogSource = "";
   while (true) {
     const {response, data} = await fetchJsonWithTimeout("api/download", {
       method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({artist, album, catalog_source: catalogSource})
+      body: JSON.stringify({
+        artist, album, catalog_source: catalogSource,
+        allow_partial: allowPartial, keep_remixes: keepRemixes,
+      })
     });
     if (response.status === 409 && data.selection_required) {
-      catalogSource = chooseCatalog(data.catalogs);
+      catalogSource = chooseCatalog(data.catalogs, artist, album);
       if (!catalogSource) return null;
       continue;
     }
@@ -446,14 +476,44 @@ async function loadAlbums(artist) {
 
 // maps key → {artist, album} to avoid quote issues in onclick
 const _albMeta = {};
+let _albumKeyCounter = 0;
+let _moreAlbums = [];
+const MORE_ALBUMS_BATCH = 10;
 
 function renderAlbumList(artist, albums) {
   const list = document.getElementById('alb-list');
   list.innerHTML='';
-  albums.forEach((a, i) => {
-    const key = 'a' + i;
+  _albumKeyCounter = 0;
+  const popular = albums.filter(a => a.popular);
+  _moreAlbums = albums.filter(a => !a.popular);
+  appendAlbumItems(artist, popular);
+  renderMoreAlbumsButton(artist);
+}
+
+function renderMoreAlbumsButton(artist) {
+  const old = document.getElementById('alb-more-row');
+  if (old) old.remove();
+  if (!_moreAlbums.length) return;
+  const list = document.getElementById('alb-list');
+  const row = document.createElement('div');
+  row.className = 'alb-more-row';
+  row.id = 'alb-more-row';
+  row.innerHTML = `<button class="btn xs secondary" id="alb-more-btn">▼ Показать ещё (${_moreAlbums.length})</button>`;
+  list.appendChild(row);
+  document.getElementById('alb-more-btn').addEventListener('click', () => {
+    const batch = _moreAlbums.splice(0, MORE_ALBUMS_BATCH);
+    row.remove();
+    appendAlbumItems(artist, batch);
+    renderMoreAlbumsButton(artist);
+  });
+}
+
+function appendAlbumItems(artist, albums) {
+  const list = document.getElementById('alb-list');
+  albums.forEach((a) => {
+    const key = 'a' + (_albumKeyCounter++);
     _albumState[key] = {open:false, tracksLoaded:false, tracks:[]};
-    _albMeta[key] = {artist, album: a.name};
+    _albMeta[key] = {artist, album: a.name, onDisk: !!a.on_disk};
     const item = document.createElement('div'); item.className='alb-item'; item.id='ai-'+key;
     item.innerHTML=`
       <div class="alb-hdr" id="ahdr-${key}">
@@ -463,6 +523,12 @@ function renderAlbumList(artist, albums) {
           <div class="alb-pc">${Number(a.playcount).toLocaleString()} plays</div>
         </div>
         ${a.on_disk ? '<span class="disk-ok">✓</span>' : ''}
+        <label class="partial-toggle" title="Publish even if some tracks fail to download" onclick="event.stopPropagation()">
+          <input type="checkbox" id="partial-${key}">partial
+        </label>
+        <label class="partial-toggle" title="Keep remix tracks - cleanup won't drop them in favor of the original" onclick="event.stopPropagation()">
+          <input type="checkbox" id="remix-${key}">remixes
+        </label>
         <button class="btn xs ${a.on_disk?'secondary':''}" id="dlbtn-${key}">↓ all</button>
         <span class="dl-status" id="dlst-${key}"></span>
         <span class="alb-arr">▶</span>
@@ -495,6 +561,18 @@ async function toggleAlbum(key) {
 
   if (!st.tracksLoaded) {
     tracks.innerHTML=`<div class="tracks-loading"><div class="spinner"></div>Loading tracks…</div>`;
+    // If it's already on disk, show the fast local listing immediately instead of
+    // blocking the whole panel open on a Last.fm/MusicBrainz/Deezer/iTunes round
+    // trip - then still fetch the catalog version in the background and swap it
+    // in once ready, since that's what adds missing-track detection + download
+    // buttons (which a from-disk-only listing can't know about).
+    const meta = _albMeta[key] || {};
+    if (meta.onDisk) {
+      try {
+        const localData = await requestLocalAlbumTracks(artist, album);
+        if (localData.length) renderTracks(artist, album, key, localData);
+      } catch(e) { /* fall through to the catalog fetch below */ }
+    }
     const ctrl = new AbortController();
     const timer = setTimeout(()=>ctrl.abort(), 15000);
     try {
@@ -569,8 +647,10 @@ async function dlAlbum(key, btn) {
   btn.disabled=true; btn.textContent='…';
   const st=document.getElementById('dlst-'+key);
   if(st){st.className='dl-status running';st.textContent='queued';}
+  const allowPartial = document.getElementById('partial-'+key)?.checked || false;
+  const keepRemixes = document.getElementById('remix-'+key)?.checked || false;
   try {
-    const result = await requestAlbumDownload(artist, album);
+    const result = await requestAlbumDownload(artist, album, allowPartial, keepRemixes);
     if (!result) throw new Error("Catalog selection cancelled");
     const {job_id} = result;
     startPoll();
@@ -661,6 +741,9 @@ function appendAnalysisResults(results) {
         <span class="miss-alb-name"><strong>${esc(r.artist)}</strong> / ${esc(r.album_dir || r.album)}</span>
         <span class="miss-badge">${r.missing.length}</span>
         <span class="miss-ratio">${r.on_disk}/${r.total}</span>
+        <label class="partial-toggle" title="Publish even if some tracks fail to download" onclick="event.stopPropagation()">
+          <input type="checkbox" id="partial-${key}">partial
+        </label>
         <button class="btn xs" id="fill-btn-${key}" style="margin-left:8px">↓ Fill</button>
         <span id="fill-st-${key}" style="font-size:12px;margin-left:6px"></span>
       </div>
@@ -688,8 +771,9 @@ async function fillAlbum(key) {
   const st = document.getElementById('fill-st-'+key);
   btn.disabled = true; btn.textContent = '…';
   if(st){st.textContent='queued';st.style.color='var(--warn)';}
+  const allowPartial = document.getElementById('partial-'+key)?.checked || false;
   try {
-    const result = await requestAlbumDownload(artist, album);
+    const result = await requestAlbumDownload(artist, album, allowPartial);
     if (!result) throw new Error("Catalog selection cancelled");
     const {job_id} = result;
     startPoll();
@@ -711,7 +795,8 @@ async function fillAll() {
   for (let i = 0; i < _analysisCount; i++) {
     const {artist, album} = _analysisMeta['miss'+i] || {};
     if (!artist) continue;
-    const result = await requestAlbumDownload(artist, album);
+    const allowPartial = document.getElementById('partial-miss'+i)?.checked || false;
+    const result = await requestAlbumDownload(artist, album, allowPartial);
     if (!result) continue;
   }
   startPoll();
@@ -750,6 +835,12 @@ function renderLib(q='') {
           <span class="at" id="lat-${akey}">${al.tracks} tracks</span>
           <button class="btn xs secondary" id="lcheck-${akey}" style="margin-left:6px;font-size:11px" title="Check for missing tracks">?</button>
           <span class="miss-badge" id="lmiss-${akey}" style="display:none"></span>
+          <label class="partial-toggle" title="Keep remix tracks for this album - cleanup won't drop them in favor of the original" onclick="event.stopPropagation()">
+            <input type="checkbox" id="lremix-${akey}"${al.keep_remixes ? ' checked' : ''}>remixes
+          </label>
+          <label class="partial-toggle" id="lpartial-wrap-${akey}" style="display:none;margin-left:4px" title="Publish even if some tracks fail to download" onclick="event.stopPropagation()">
+            <input type="checkbox" id="lpartial-${akey}">partial
+          </label>
           <button class="btn xs" id="lfill-${akey}" style="display:none;margin-left:4px">↓ Fill</button>
           <span id="lfill-st-${akey}" style="font-size:12px;margin-left:4px"></span>
         </div>
@@ -771,12 +862,32 @@ function renderLib(q='') {
       if (hdr) hdr.addEventListener('click', () => toggleLibAlbum(akey, _libAlbMeta[akey]));
       const chk = sec.querySelector(`#lcheck-${akey}`);
       if (chk) chk.addEventListener('click', e => { e.stopPropagation(); checkAlbumMissing(akey, _libAlbMeta[akey]); });
+      const remixChk = sec.querySelector(`#lremix-${akey}`);
+      if (remixChk) remixChk.addEventListener('change', () => setAlbumKeepRemixes(akey, _libAlbMeta[akey], remixChk));
     });
     list.appendChild(sec);
   });
 }
 
 function toggleArt(h){ h.classList.toggle('open'); h.nextElementSibling.classList.toggle('open'); }
+
+async function setAlbumKeepRemixes(akey, meta, checkbox) {
+  const {artist, album} = meta || {};
+  if (!artist) return;
+  const keep = checkbox.checked;
+  checkbox.disabled = true;
+  try {
+    const r = await fetch('api/album/keep-remixes', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({artist, album, keep})
+    });
+    if (!r.ok) throw new Error();
+  } catch(e) {
+    checkbox.checked = !keep; // revert on failure
+  } finally {
+    checkbox.disabled = false;
+  }
+}
 
 async function checkAlbumMissing(akey, meta) {
   const {artist, album} = meta || {};
@@ -794,6 +905,8 @@ async function checkAlbumMissing(akey, meta) {
     if (latEl) latEl.textContent = `${data.filter(t=>t.on_disk).length}/${data.length} tracks`;
     if (missing.length) {
       if(missEl){ missEl.textContent = missing.length + ' missing'; missEl.style.display = ''; }
+      const partialWrap = document.getElementById('lpartial-wrap-'+akey);
+      if(partialWrap) partialWrap.style.display = '';
       if(fillBtn){
         fillBtn.style.display = '';
         fillBtn.replaceWith(fillBtn.cloneNode(true)); // remove old listeners
@@ -825,45 +938,87 @@ async function toggleLibAlbum(akey, meta) {
   if(_libAlbLoaded[akey]) return;
   _libAlbLoaded[akey] = true;
   tracks.innerHTML=`<div class="tracks-loading"><div class="spinner"></div>Loading…</div>`;
-  const ctrl = new AbortController();
-  const timer = setTimeout(()=>ctrl.abort(), 15000);
   try{
-    const data = await requestAlbumTracks(artist, album);
-    clearTimeout(timer);
-    if (!data) throw new Error("Catalog selection cancelled");
+    // Local filesystem listing only - fast, no Last.fm/MusicBrainz/Deezer/iTunes
+    // round-trip. Missing-track detection is what the "?" button
+    // (checkAlbumMissing) is for, not a plain row expand.
+    const data = await requestLocalAlbumTracks(artist, album);
     if(!data.length){ tracks.innerHTML=`<div class="tracks-loading" style="color:var(--muted)">No tracks found</div>`; return; }
-    const missing = data.filter(t => !t.on_disk);
     const latEl = document.getElementById('lat-'+akey);
-    if(latEl) latEl.textContent = `${data.filter(t=>t.on_disk).length}/${data.length} tracks`;
-    const fillBtn = document.getElementById('lfill-'+akey);
-    if(fillBtn && missing.length) {
-      fillBtn.style.display = '';
-      fillBtn.textContent = `↓ ${missing.length} missing`;
-      fillBtn.addEventListener('click', e => { e.stopPropagation(); libFillAlbum(akey, artist, album, fillBtn); });
-    }
+    if(latEl) latEl.textContent = `${data.length} tracks`;
     tracks.innerHTML = data.map((t, i) => {
       const ltkey = akey+'_lt'+i;
       _trackMeta[ltkey] = {artist, album, title: t.title};
-      const action = t.on_disk
-        ? `<span class="disk-ok" style="font-size:12px">✓</span>`
-        : `<span class="track-st" id="ltst-${ltkey}"></span><button class="btn xs secondary" id="ltbtn-${ltkey}">↓</button>`;
       return `<div class="lib-track-row">
         <span class="lib-track-num">${t.num}</span>
         <span style="flex:1">${esc(t.title)}</span>
-        ${action}
+        <span class="disk-ok" style="font-size:12px">✓</span>
+        <button class="btn xs secondary" id="ltrreplace-${ltkey}" title="Find a different source and replace this file">⟳</button>
+        <span id="ltrst-${ltkey}" style="font-size:11px;margin-left:4px"></span>
       </div>`;
     }).join('');
-    tracks.querySelectorAll('button[id^="ltbtn-"]').forEach(btn => {
-      const ltkey = btn.id.slice(6);
-      btn.addEventListener('click', () => dlTrack(ltkey, btn));
+    tracks.querySelectorAll('button[id^="ltrreplace-"]').forEach(btn => {
+      const ltkey = btn.id.slice('ltrreplace-'.length);
+      btn.addEventListener('click', e => { e.stopPropagation(); replaceTrack(ltkey); });
     });
   }catch(e){
-    clearTimeout(timer);
     _libAlbLoaded[akey] = false;
-    const msg = e.name==='AbortError' ? 'Timeout' : 'Error';
-    tracks.innerHTML=`<div class="tracks-loading" style="color:var(--error)">${msg} <button class="btn xs secondary" style="margin-left:8px" id="retry-${akey}">Retry</button></div>`;
+    tracks.innerHTML=`<div class="tracks-loading" style="color:var(--error)">Error <button class="btn xs secondary" style="margin-left:8px" id="retry-${akey}">Retry</button></div>`;
     document.getElementById('retry-'+akey)?.addEventListener('click', ()=>toggleLibAlbum(akey, meta));
-    _libAlbLoaded[akey]=false;
+  }
+}
+
+function chooseTrackSource(sources, artist, title) {
+  let message = `Alternative sources for ${artist} — ${title}:\n`;
+  sources.forEach((s, i) => {
+    const dur = s.duration ? ` (${Math.round(s.duration)}s)` : '';
+    message += `\n[${i + 1}] ${s.source} - ${s.channel || s.title || '?'}${dur}`;
+  });
+  const answer = window.prompt(message + "\n\nSelect source number to replace with. Cancel to abort.", "1");
+  if (answer === null) return null;
+  const number = Number(answer.trim());
+  if (Number.isInteger(number) && number >= 1 && number <= sources.length) return sources[number - 1];
+  window.alert("Invalid selection.");
+  return null;
+}
+
+async function replaceTrack(ltkey) {
+  const {artist, album, title} = _trackMeta[ltkey] || {};
+  if (!artist) return;
+  const btn = document.getElementById('ltrreplace-' + ltkey);
+  const st = document.getElementById('ltrst-' + ltkey);
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  if (st) { st.textContent = 'searching…'; st.style.color = 'var(--warn)'; }
+  try {
+    const {response, data: sources} = await fetchJsonWithTimeout(
+      `api/track/sources?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}&title=${encodeURIComponent(title)}`,
+      {}, 30000
+    );
+    if (!response.ok) throw new Error(sources.error || 'Source lookup failed');
+    if (!sources.length) { if (st) { st.textContent = 'no sources found'; st.style.color = 'var(--error)'; } return; }
+    const chosen = chooseTrackSource(sources, artist, title);
+    if (!chosen) { if (st) st.textContent = ''; return; }
+    if (st) { st.textContent = 'queued'; }
+    const rr = await fetch('api/track/replace', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({artist, album, title, source: chosen.source, source_url: chosen.url})
+    });
+    const result = await rr.json();
+    if (!rr.ok) throw new Error(result.error || 'Replace failed');
+    const {job_id} = result;
+    startPoll();
+    const iv = setInterval(async () => {
+      const jr = await fetch(`api/jobs/${job_id}`);
+      const j = await jr.json();
+      if (st) {
+        st.textContent = j.status === 'running' ? 'downloading…' : j.status === 'done' ? '✓ replaced' : '✗ failed';
+        st.style.color = j.status === 'done' ? 'var(--success)' : j.status === 'error' ? 'var(--error)' : 'var(--warn)';
+      }
+      if (j.status !== 'running') { clearInterval(iv); if (btn) { btn.disabled = false; btn.textContent = '⟳'; } }
+    }, 2000);
+  } catch (e) {
+    if (st) { st.textContent = 'error: ' + e.message; st.style.color = 'var(--error)'; }
+    if (btn) { btn.disabled = false; btn.textContent = '⟳'; }
   }
 }
 
@@ -871,8 +1026,9 @@ async function libFillAlbum(akey, artist, album, btn) {
   const st = document.getElementById('lfill-st-'+akey);
   btn.disabled = true; btn.textContent = '…';
   if(st){st.textContent='queued';st.style.color='var(--warn)';}
+  const allowPartial = document.getElementById('lpartial-'+akey)?.checked || false;
   try {
-    const result = await requestAlbumDownload(artist, album);
+    const result = await requestAlbumDownload(artist, album, allowPartial);
     if (!result) throw new Error("Catalog selection cancelled");
     const {job_id} = result;
     startPoll();
@@ -888,10 +1044,23 @@ async function libFillAlbum(akey, artist, album, btn) {
 }
 
 // ── Jobs ───────────────────────────────────────────────────────────────────
+const _seenJobStatus = {};
 async function loadJobs() {
   try {
     const r=await fetch('api/jobs');
     const jobs=await r.json();
+    // A completed download job means whatever album it touched may now have
+    // different tracks on disk - the Search/Library panels cache their track
+    // listing per-album once expanded (see _libAlbLoaded / _albumState) and
+    // won't otherwise refetch, so without this a row expanded before the
+    // download finished just keeps showing its stale pre-download snapshot.
+    jobs.forEach(j => {
+      if (j.status !== 'running' && _seenJobStatus[j.id] === 'running') {
+        Object.keys(_libAlbLoaded).forEach(k => _libAlbLoaded[k] = false);
+        Object.keys(_albumState).forEach(k => _albumState[k].tracksLoaded = false);
+      }
+      _seenJobStatus[j.id] = j.status;
+    });
     const running=jobs.filter(j=>j.status==='running').length;
     const btn=document.getElementById('nav-downloads');
     const b=btn.querySelector('.badge');
@@ -904,25 +1073,63 @@ async function loadJobs() {
   }catch(e){return [];}
 }
 
-async function renderJobs(jobs) {
-  if(!jobs){const r=await fetch('api/jobs');jobs=await r.json();}
-  const list=document.getElementById('jobs-list');
-  if(!jobs.length){list.innerHTML='<div class="empty">No downloads yet</div>';return;}
-  list.innerHTML='';
-  jobs.forEach(j=>{
-    const icon=j.status==='running'?'<div class="spinner"></div>':j.status==='done'?'✓':'✗';
-    const card=document.createElement('div'); card.className=`job-card ${j.status}`;
-    const exp=_jobExp[j.id]||j.status==='running';
-    card.innerHTML=`
+function _jobCardHtml(j) {
+  const icon=j.status==='running'?'<div class="spinner"></div>':j.status==='done'?'✓':'✗';
+  const exp=_jobExp[j.id]||j.status==='running';
+  return {exp, html: `
       <div class="job-hdr" onclick="toggleJob('${j.id}')">
         <div class="job-icon">${icon}</div>
         <div class="job-label">${esc(j.label)}</div>
         <div class="job-time">${ago(j.created)} ago</div>
         ${j.status!=='running'?`<button class="btn xs danger" style="margin-left:6px" onclick="delJob(event,'${j.id}')">✕</button>`:''}
       </div>
-      <div class="job-log${exp?' open':''}" id="log-${j.id}">${esc(j.log_tail.join('\n'))}</div>`;
-    list.appendChild(card);
-    if(exp){const l=document.getElementById('log-'+j.id);l.scrollTop=l.scrollHeight;}
+      <div class="job-log${exp?' open':''}" id="log-${j.id}">${esc(j.log_tail.join('\n'))}</div>`};
+}
+
+async function renderJobs(jobs) {
+  if(!jobs){const r=await fetch('api/jobs');jobs=await r.json();}
+  const list=document.getElementById('jobs-list');
+  if(!jobs.length){list.innerHTML='<div class="empty">No downloads yet</div>';return;}
+  if(list.querySelector('.empty')) list.innerHTML='';
+
+  // Rebuilding the whole list every poll (every 2s while a download runs) collapses
+  // its height for a moment as the DOM is torn down, which makes the browser clamp
+  // the page's scroll position to fit - and it never scrolls back down once the
+  // content returns. Update existing cards in place instead of replacing them, so
+  // a card that hasn't changed never disappears and the page never loses height.
+  const seen=new Set();
+  jobs.forEach(j=>{
+    seen.add(j.id);
+    const {exp, html}=_jobCardHtml(j);
+    let card=document.getElementById('jc-'+j.id);
+    if(!card){
+      card=document.createElement('div');
+      card.id='jc-'+j.id;
+      card.className=`job-card ${j.status}`;
+      card.innerHTML=html;
+      list.appendChild(card);
+      if(exp){const l=document.getElementById('log-'+j.id);l.scrollTop=l.scrollHeight;}
+      return;
+    }
+    card.className=`job-card ${j.status}`;
+    const logEl=card.querySelector('.job-log');
+    const atBottom=logEl?logEl.scrollTop+logEl.clientHeight>=logEl.scrollHeight-5:true;
+    const newLog=j.log_tail.join('\n');
+    if(logEl && logEl.textContent!==newLog){
+      logEl.textContent=newLog;
+      if(atBottom) logEl.scrollTop=logEl.scrollHeight;
+    }
+    if(logEl) logEl.classList.toggle('open', exp);
+    const iconEl=card.querySelector('.job-icon');
+    if(iconEl) iconEl.innerHTML=j.status==='running'?'<div class="spinner"></div>':j.status==='done'?'✓':'✗';
+    const hdr=card.querySelector('.job-hdr');
+    if(hdr && j.status!=='running' && !hdr.querySelector('.btn.danger')){
+      hdr.insertAdjacentHTML('beforeend', `<button class="btn xs danger" style="margin-left:6px" onclick="delJob(event,'${j.id}')">✕</button>`);
+    }
+  });
+  list.querySelectorAll('.job-card').forEach(card=>{
+    const id=card.id.slice(3);
+    if(!seen.has(id)) card.remove();
   });
 }
 
@@ -970,12 +1177,48 @@ async function runFix(flags) {
   flags.forEach(f=>body[f]=true);
   setSt('st-preview','loading','Applying fixes…');
   document.getElementById('apply-actions').style.display='none';
+  const out=document.getElementById('preview-out');
+  out.classList.add('open'); out.textContent='';
   try{
-    await fetch('api/prepare/fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    clrSt('st-preview');
-    tab('downloads');
-    startPoll();
+    const r=await fetch('api/prepare/fix',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const {job_id}=await r.json();
+    const iv=setInterval(async()=>{
+      const jr=await fetch(`api/jobs/${job_id}`);
+      const j=await jr.json();
+      out.textContent=j.log.join('\n');
+      out.scrollTop=out.scrollHeight;
+      if(j.status!=='running'){
+        clearInterval(iv);
+        if(j.status==='done') clrSt('st-preview');
+        else setSt('st-preview','error','Failed');
+      }
+    },1000);
   }catch(e){setSt('st-preview','error',e.message);}
+}
+
+async function checkNavidromeDupes() {
+  const btn = document.getElementById('btn-nd-check');
+  const out = document.getElementById('nd-out');
+  const apply = document.getElementById('nd-apply-toggle').checked;
+  btn.disabled = true;
+  setSt('st-nd', 'loading', apply ? 'Applying…' : 'Checking…');
+  out.classList.add('open');
+  try {
+    const r = await fetch('api/navidrome/dupes', {method: apply ? 'POST' : 'GET'});
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Request failed');
+    if (!data.duplicates.length) {
+      out.textContent = 'No duplicates found.';
+      clrSt('st-nd');
+    } else {
+      out.textContent = data.duplicates.map(d => `[!] ${d.path}  (${d.count} entries)`).join('\n')
+        + (data.fixed ? '\n\nFIX applied - duplicate rows removed, rescan requested.' : '\n\nDRY-RUN - check "Apply fix" and run again to remove them.');
+      setSt('st-nd', data.fixed ? 'ok' : '', `${data.duplicates.length} found`);
+    }
+  } catch(e) {
+    setSt('st-nd', 'error', e.message);
+  }
+  btn.disabled = false;
 }
 
 // ── Upload ─────────────────────────────────────────────────────────────────

@@ -23,12 +23,17 @@ PREPARE_APP = os.environ.get("PREPARE_APP", "/prepare_app")
 if PREPARE_APP not in sys.path:
     sys.path.insert(0, PREPARE_APP)
 
-from common import AUDIO_EXTENSIONS, is_excluded
+from common import AUDIO_EXTENSIONS, KEEP_REMIXES_MARKER, is_excluded, keeps_remixes, safe_component as _safe_component
+from download_music import find_track_sources
 from intake import IntakeError, inspect_file, list_incoming, publish_incoming, resolve_incoming
 from metadata import (
+    JUNK_ALBUM_RE,
+    SINGLE_EP_RE,
     album_info,
+    artist_album_entries,
     artist_search,
     best_cover_url,
+    deezer_artist_image,
     extract_title_from_stem,
     find_named_dir,
     popular_album_entries,
@@ -37,7 +42,7 @@ from metadata import (
     title_variants,
     verified_album_info,
 )
-from runtime import trigger_navidrome_rescan
+from runtime import dedupe_navidrome_media_files, trigger_navidrome_rescan
 from tags import _get_tracknum, get_tags
 
 from mutagen import File as MutagenFile
@@ -138,7 +143,8 @@ def _run_command(job_id: str, command: list[str], rescan: bool = False):
 
 
 def _run_download(
-    job_id: str, artist: str, album: str, catalog_source: str = ""
+    job_id: str, artist: str, album: str, catalog_source: str = "",
+    allow_partial: bool = False, keep_remixes: bool = False,
 ):
     command = [
         sys.executable, f"{PREPARE_APP}/download_music.py",
@@ -147,6 +153,10 @@ def _run_download(
     ]
     if catalog_source:
         command.extend(["--catalog-source", catalog_source])
+    if allow_partial:
+        command.append("--allow-partial")
+    if keep_remixes:
+        command.append("--keep-remixes")
     _run_command(job_id, command, rescan=True)
 
 
@@ -160,6 +170,14 @@ def _run_download_track(job_id: str, artist: str, title: str, album: str):
         sys.executable, f"{PREPARE_APP}/download_music.py",
         "--track", artist, title,
         "--out", str(album_dir),
+    ], rescan=True)
+
+
+def _run_replace_track(job_id: str, artist: str, title: str, file_path: str, source: str, source_url: str):
+    _run_command(job_id, [
+        sys.executable, f"{PREPARE_APP}/download_music.py",
+        "--replace-track", artist, title, file_path,
+        "--source", source, "--source-url", source_url,
     ], rescan=True)
 
 
@@ -180,11 +198,6 @@ def _run_intake(job_id: str, names: list[str] | None, bypass: bool):
         ok = scan_ok
     _invalidate_library()
     _finish(job_id, ok)
-
-
-def _safe_component(value: str, fallback: str) -> str:
-    value = re.sub(r"[\\/\x00-\x1f]", "_", value).strip().strip(".")
-    return value or fallback
 
 
 def _disk_titles(album_dir: Path) -> tuple[list[tuple[int, str]], set[str]]:
@@ -209,6 +222,23 @@ def _disk_titles(album_dir: Path) -> tuple[list[tuple[int, str]], set[str]]:
             pass
         files.append((tagged_number or filename_number or fallback_number, title))
     return files, variants
+
+
+def _find_track_file(album_dir: Path, title: str) -> Path | None:
+    target = slug(title)
+    for path in sorted(album_dir.iterdir()):
+        if not path.is_file() or path.suffix.casefold() not in AUDIO_EXTENSIONS:
+            continue
+        if slug(extract_title_from_stem(path.stem)) == target:
+            return path
+        try:
+            media = MutagenFile(str(path), easy=False)
+            tagged_title = get_tags(media).get("title", "") if media else ""
+        except Exception:
+            tagged_title = ""
+        if tagged_title and slug(tagged_title) == target:
+            return path
+    return None
 
 
 def _album_tracks(
@@ -251,7 +281,10 @@ def _build_library() -> list:
                 for path in album_dir.iterdir()
             )
             if tracks:
-                albums.append({"name": album_dir.name, "tracks": tracks})
+                albums.append({
+                    "name": album_dir.name, "tracks": tracks,
+                    "keep_remixes": keeps_remixes(album_dir),
+                })
         if albums:
             artists.append({
                 "name": artist_dir.name,
@@ -314,31 +347,72 @@ def search_artists_route():
     query = request.args.get("q", "").strip()
     if len(query) < 2:
         return jsonify([])
+    artists = artist_search(query, LASTFM_KEY)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        deezer_images = list(pool.map(lambda a: deezer_artist_image(a.get("name", "")), artists))
     return jsonify([
         {
             "name": artist.get("name", ""),
             "listeners": int(artist.get("listeners", 0) or 0),
-            "image": best_cover_url(artist.get("image", []), "medium"),
+            "image": deezer_images[i] or best_cover_url(artist.get("image", []), "medium"),
         }
-        for artist in artist_search(query, LASTFM_KEY)
+        for i, artist in enumerate(artists)
     ])
 
 
 @app.route("/tools/api/artist/<path:artist>/albums")
 def artist_albums(artist: str):
-    studios, singles = popular_album_entries(artist, LASTFM_KEY)
+    entries = artist_album_entries(artist, LASTFM_KEY, limit=200)
     artist_dir = find_named_dir(MUSIC_DIR, artist)
     existing = {
         slug(path.name) for path in artist_dir.iterdir() if path.is_dir()
     } if artist_dir else set()
-    return jsonify([
-        {
+
+    # Same "popular" cutoff used when downloading (popular_album_entries), so the
+    # default view matches what --all-albums would fetch - but here we still return
+    # everything else too, just flagged, so the UI can reveal the long tail on demand
+    # instead of it silently vanishing.
+    top_playcount = max((item["playcount"] for item in entries), default=0)
+    relative_threshold = int(top_playcount * 0.05)
+    threshold = max(500, relative_threshold) if top_playcount >= 500 else relative_threshold
+
+    filtered = [item for item in entries if not JUNK_ALBUM_RE.search(item["name"])]
+    filtered.sort(key=lambda item: item["playcount"], reverse=True)
+    studio_count = 0
+    result = []
+    for item in filtered:
+        is_single = bool(SINGLE_EP_RE.search(item["name"]))
+        popular = item["playcount"] >= threshold and (is_single or studio_count < 15)
+        if popular and not is_single:
+            studio_count += 1
+        result.append({
             "name": item["name"],
             "playcount": item["playcount"],
             "image": best_cover_url(item["images"], "medium"),
             "on_disk": slug(item["name"]) in existing,
-        }
-        for item in studios + singles
+            "popular": popular,
+        })
+    return jsonify(result)
+
+
+@app.route("/tools/api/album/local-tracks")
+def album_local_tracks():
+    # Filesystem-only listing, no catalog lookup - used for simply expanding an
+    # album row in the Library tab, which shouldn't have to wait on Last.fm/
+    # MusicBrainz/Deezer/iTunes just to show tracks that are already on disk.
+    # Missing-track detection (which genuinely needs the catalog) stays on the
+    # "?" check button / album_tracks() below, not on a plain click.
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+    clean_album = re.sub(r"^\d{4}\s*-\s*", "", album)
+    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
+    disk_files, _ = _disk_titles(album_dir) if album_dir else ([], set())
+    return jsonify([
+        {"num": number, "title": title, "on_disk": True}
+        for number, title in sorted(disk_files)
     ])
 
 
@@ -374,12 +448,79 @@ def library():
     return jsonify(_build_library())
 
 
+@app.route("/tools/api/album/keep-remixes", methods=["POST"])
+def album_keep_remixes():
+    body = request.get_json(silent=True) or {}
+    artist = str(body.get("artist", "")).strip()
+    album = str(body.get("album", "")).strip()
+    keep = bool(body.get("keep"))
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    album_dir = find_named_dir(artist_dir, album) if artist_dir else None
+    if not album_dir:
+        return jsonify({"error": "album not found on disk"}), 404
+    marker = album_dir / KEEP_REMIXES_MARKER
+    if keep:
+        marker.touch(exist_ok=True)
+    else:
+        marker.unlink(missing_ok=True)
+    _invalidate_library()
+    return jsonify({"keep_remixes": keep})
+
+
+@app.route("/tools/api/track/sources")
+def track_sources():
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    title = request.args.get("title", "").strip()
+    if not artist or not title:
+        return jsonify({"error": "artist and title required"}), 400
+    clean_album = re.sub(r"^\d{4}\s*-\s*", "", album) if album else None
+    expected_duration = None
+    if album:
+        artist_dir = find_named_dir(MUSIC_DIR, artist)
+        album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
+        track_path = _find_track_file(album_dir, title) if album_dir else None
+        if track_path:
+            media = MutagenFile(str(track_path), easy=False)
+            if media is not None and media.info is not None:
+                expected_duration = float(media.info.length)
+    sources = find_track_sources(artist, title, clean_album, expected_duration)
+    return jsonify(sources)
+
+
+@app.route("/tools/api/track/replace", methods=["POST"])
+def track_replace():
+    body = request.get_json(silent=True) or {}
+    artist = str(body.get("artist", "")).strip()
+    album = str(body.get("album", "")).strip()
+    title = str(body.get("title", "")).strip()
+    source = str(body.get("source", "")).strip()
+    source_url = str(body.get("source_url", "")).strip()
+    if not artist or not album or not title or not source_url:
+        return jsonify({"error": "artist, album, title and source_url required"}), 400
+    clean_album = re.sub(r"^\d{4}\s*-\s*", "", album)
+    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
+    track_path = _find_track_file(album_dir, title) if album_dir else None
+    if not track_path:
+        return jsonify({"error": "track not found on disk"}), 404
+    label = f"{artist} — {title} (replace)"
+    return jsonify({
+        "job_id": _submit(label, _run_replace_track, artist, title, str(track_path), source, source_url),
+        "label": label,
+    })
+
+
 @app.route("/tools/api/download", methods=["POST"])
 def download():
     body = request.get_json(silent=True) or {}
     artist = str(body.get("artist", "")).strip()
     album = str(body.get("album", "")).strip()
     catalog_source = str(body.get("catalog_source", "")).strip()
+    allow_partial = bool(body.get("allow_partial"))
+    keep_remixes = bool(body.get("keep_remixes"))
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
 
@@ -394,7 +535,9 @@ def download():
     selected_source = catalog_source or str(info.get("selected_source") or "")
     label = f"{artist} — {album}"
     return jsonify({
-        "job_id": _submit(label, _run_download, artist, album, selected_source),
+        "job_id": _submit(
+            label, _run_download, artist, album, selected_source, allow_partial, keep_remixes
+        ),
         "label": label,
         "catalog_source": selected_source,
     })
@@ -469,6 +612,22 @@ def prepare_preview():
     return jsonify({"job_id": _submit("prepare dry-run", _run_prepare, [], hidden=True)})
 
 
+@app.route("/tools/api/navidrome/dupes", methods=["GET", "POST"])
+def navidrome_dupes():
+    # Fast enough (a couple seconds even across the whole library) to run inline
+    # rather than through the job queue - GET checks, POST applies the fix.
+    fix = request.method == "POST"
+    duplicates = dedupe_navidrome_media_files(fix)
+    if duplicates is None:
+        return jsonify({"error": "NAVIDROME_DB_PATH not configured/mounted"}), 501
+    if fix and duplicates:
+        trigger_navidrome_rescan("music-web")
+    return jsonify({
+        "duplicates": [{"path": path, "count": count} for path, count in duplicates],
+        "fixed": fix,
+    })
+
+
 @app.route("/tools/api/prepare/fix", methods=["POST"])
 def prepare_fix():
     body = request.get_json(silent=True) or {}
@@ -486,7 +645,7 @@ def prepare_fix():
         return jsonify({"error": "only one cleanup scope may be selected"}), 400
     flags.extend(selected)
     label = "prepare " + " ".join(flags)
-    return jsonify({"job_id": _submit(label, _run_prepare, flags), "label": label})
+    return jsonify({"job_id": _submit(label, _run_prepare, flags, hidden=True), "label": label})
 
 
 @app.route("/tools/api/upload", methods=["POST"])

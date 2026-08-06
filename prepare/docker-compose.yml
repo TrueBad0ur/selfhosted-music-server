@@ -7,6 +7,8 @@ services:
     environment:
       MUSIC_DIR: /music
       NAVIDROME_URL: http://10.10.10.73:4533
+      NAVIDROME_DB_PATH: /navidrome_data/navidrome.db
     volumes:
       - ${MUSIC_DIR}:/music
       - ${INCOMING_DIR:-../application/incoming}:/incoming
+      - ../application/data:/navidrome_data

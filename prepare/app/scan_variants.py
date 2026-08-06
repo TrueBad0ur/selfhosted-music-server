@@ -3,10 +3,19 @@ import re as _re
 from collections import defaultdict
 from pathlib import Path
 
-from common import AUDIO_EXTENSIONS, is_excluded, _FORMAT_PRIORITY
+from common import AUDIO_EXTENSIONS, is_excluded, keeps_remixes, _FORMAT_PRIORITY
 
 _VARIANT_SUFFIX_RE = _re.compile(
     r'\s*[\(\[](instrumental|revisited|remix|remixed|version|edit|live|acoustic|'
+    r'demo|extended|radio edit|reprise|interlude|intro|outro|feat\.|ft\.|'
+    r'\d{4})\b.*?[\)\]]',
+    _re.IGNORECASE
+)
+# Same as above minus remix/remixed - used for albums marked to keep their
+# remixes, so a remix track is never grouped with (and dropped in favor of)
+# its original.
+_VARIANT_SUFFIX_NO_REMIX_RE = _re.compile(
+    r'\s*[\(\[](instrumental|revisited|version|edit|live|acoustic|'
     r'demo|extended|radio edit|reprise|interlude|intro|outro|feat\.|ft\.|'
     r'\d{4})\b.*?[\)\]]',
     _re.IGNORECASE
@@ -22,17 +31,19 @@ _CONTENT_ALTERING_RE = _re.compile(
 _REMASTER_RE = _re.compile(r'\b(remaster(?:ed)?)\b', _re.IGNORECASE)
 
 
-def _variant_base(stem: str) -> str:
+def _variant_base(stem: str, keep_remixes: bool = False) -> str:
+    suffix_re = _VARIANT_SUFFIX_NO_REMIX_RE if keep_remixes else _VARIANT_SUFFIX_RE
     if ' - ' in stem:
         stem = stem.split(' - ', 1)[1]
-    stem = _VARIANT_SUFFIX_RE.sub('', stem)
+    stem = suffix_re.sub('', stem)
     stem = _VARIANT_DASH_RE.sub('', stem)
     return stem.strip().lower()
 
 
-def _is_variant_stem(stem: str) -> bool:
+def _is_variant_stem(stem: str, keep_remixes: bool = False) -> bool:
+    suffix_re = _VARIANT_SUFFIX_NO_REMIX_RE if keep_remixes else _VARIANT_SUFFIX_RE
     check = stem.split(' - ', 1)[1] if ' - ' in stem else stem
-    return bool(_VARIANT_SUFFIX_RE.search(check) or _VARIANT_DASH_RE.search(check))
+    return bool(suffix_re.search(check) or _VARIANT_DASH_RE.search(check))
 
 
 def scan_variants(root: Path, fix: bool):
@@ -50,9 +61,11 @@ def scan_variants(root: Path, fix: bool):
         if not audio_files:
             continue
 
+        keep_remixes = keeps_remixes(p)
+
         groups = defaultdict(list)
         for fname in audio_files:
-            bn = _variant_base(Path(fname).stem)
+            bn = _variant_base(Path(fname).stem, keep_remixes)
             if bn:
                 groups[bn].append(fname)
 
@@ -61,8 +74,8 @@ def scan_variants(root: Path, fix: bool):
         for base, group in sorted(groups.items()):
             if len(group) == 1:
                 continue
-            variants  = [f for f in group if _is_variant_stem(Path(f).stem)]
-            originals = [f for f in group if not _is_variant_stem(Path(f).stem)]
+            variants  = [f for f in group if _is_variant_stem(Path(f).stem, keep_remixes)]
+            originals = [f for f in group if not _is_variant_stem(Path(f).stem, keep_remixes)]
 
             if variants and originals:
                 best_var_fmt  = min(_FORMAT_PRIORITY.get(Path(f).suffix.lower(), 99) for f in variants)

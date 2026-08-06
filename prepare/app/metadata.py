@@ -22,6 +22,11 @@ JUNK_ALBUM_RE = re.compile(
     re.IGNORECASE,
 )
 SINGLE_EP_RE = re.compile(r"\b(single|ep|e\.p\.?)\b", re.IGNORECASE)
+_COMPILATION_ALBUM_RE = re.compile(
+    r"\b(сборник|избранное|антология|best\s*of|greatest\s*hits?|collection|"
+    r"anthology|compilation)\b",
+    re.IGNORECASE,
+)
 YEAR_PREFIX_RE = re.compile(r"^\d{4}\s*-\s*")
 _TITLE_VARIANT_NOISE_RE = re.compile(
     r"\((?:official(?:\s+(?:track|audio|video))?|remaster(?:ed)?)[^)]*\)",
@@ -29,6 +34,7 @@ _TITLE_VARIANT_NOISE_RE = re.compile(
 )
 _TITLE_CREDIT_RE = re.compile(r"\((?:feat(?:uring)?\.?|ft\.?)\s*[^)]*\)", re.IGNORECASE)
 _TITLE_KARAOKE_MIX_RE = re.compile(r"\b(караоке|karaoke)\s+(?:микс|mix)\b", re.IGNORECASE)
+_DZH_DIGRAPH_RE = re.compile(r"дж", re.IGNORECASE)
 
 _CYR_LAT = {
     "а":"a", "б":"b", "в":"v", "г":"g", "д":"d", "е":"e", "ё":"yo",
@@ -37,6 +43,82 @@ _CYR_LAT = {
     "ф":"f", "х":"kh", "ц":"ts", "ч":"ch", "ш":"sh", "щ":"sch", "ъ":"",
     "ы":"y", "ь":"", "э":"e", "ю":"yu", "я":"ya",
 }
+
+# Katakana is a phonetic syllabary with a mechanical 1:1 reading (unlike kanji),
+# so it transliterates the same way _CYR_LAT handles Cyrillic. Digraphs (きゃ-type,
+# and foreign-sound extensions like ファ/ティ) are checked before single characters.
+_KATAKANA_DIGRAPHS = {
+    "キャ":"kya","キュ":"kyu","キョ":"kyo","シャ":"sha","シュ":"shu","ショ":"sho",
+    "チャ":"cha","チュ":"chu","チョ":"cho","ニャ":"nya","ニュ":"nyu","ニョ":"nyo",
+    "ヒャ":"hya","ヒュ":"hyu","ヒョ":"hyo","ミャ":"mya","ミュ":"myu","ミョ":"myo",
+    "リャ":"rya","リュ":"ryu","リョ":"ryo","ギャ":"gya","ギュ":"gyu","ギョ":"gyo",
+    "ジャ":"ja","ジュ":"ju","ジョ":"jo","ビャ":"bya","ビュ":"byu","ビョ":"byo",
+    "ピャ":"pya","ピュ":"pyu","ピョ":"pyo","ファ":"fa","フィ":"fi","フェ":"fe",
+    "フォ":"fo","ティ":"ti","ディ":"di","トゥ":"tu","ドゥ":"du","ウィ":"wi",
+    "ウェ":"we","ウォ":"wo","ヴァ":"va","ヴィ":"vi","ヴェ":"ve","ヴォ":"vo",
+    "チェ":"che","ジェ":"je","シェ":"she",
+}
+_KATAKANA_SINGLE = {
+    "ア":"a","イ":"i","ウ":"u","エ":"e","オ":"o",
+    "カ":"ka","キ":"ki","ク":"ku","ケ":"ke","コ":"ko",
+    "ガ":"ga","ギ":"gi","グ":"gu","ゲ":"ge","ゴ":"go",
+    "サ":"sa","シ":"shi","ス":"su","セ":"se","ソ":"so",
+    "ザ":"za","ジ":"ji","ズ":"zu","ゼ":"ze","ゾ":"zo",
+    "タ":"ta","チ":"chi","ツ":"tsu","テ":"te","ト":"to",
+    "ダ":"da","ヂ":"ji","ヅ":"zu","デ":"de","ド":"do",
+    "ナ":"na","ニ":"ni","ヌ":"nu","ネ":"ne","ノ":"no",
+    "ハ":"ha","ヒ":"hi","フ":"fu","ヘ":"he","ホ":"ho",
+    "バ":"ba","ビ":"bi","ブ":"bu","ベ":"be","ボ":"bo",
+    "パ":"pa","ピ":"pi","プ":"pu","ペ":"pe","ポ":"po",
+    "マ":"ma","ミ":"mi","ム":"mu","メ":"me","モ":"mo",
+    "ヤ":"ya","ユ":"yu","ヨ":"yo",
+    "ラ":"ra","リ":"ri","ル":"ru","レ":"re","ロ":"ro",
+    "ワ":"wa","ヲ":"wo","ン":"n","ヴ":"vu","ヶ":"ke",
+}
+
+
+def katakana_to_romaji(value: str) -> str:
+    """Mechanically transliterate katakana runs to romaji; non-katakana characters
+    (kanji, latin, punctuation) pass through unchanged since they can't be."""
+    result = []
+    chars = value
+    i = 0
+    while i < len(chars):
+        digraph = chars[i:i + 2]
+        if digraph in _KATAKANA_DIGRAPHS:
+            result.append(_KATAKANA_DIGRAPHS[digraph])
+            i += 2
+            continue
+        char = chars[i]
+        if char == "ッ" and i + 1 < len(chars):
+            # Sokuon: doubles the consonant of the NEXT mora (っか -> "kka").
+            nxt = chars[i + 1:i + 3]
+            nxt_romaji = _KATAKANA_DIGRAPHS.get(nxt) or _KATAKANA_SINGLE.get(chars[i + 1], "")
+            if nxt_romaji and nxt_romaji[0] not in "aiueon":
+                result.append(nxt_romaji[0])
+            i += 1
+            continue
+        if char == "ー" and result and result[-1]:
+            # Long vowel mark: repeats the previous mora's final vowel.
+            result.append(result[-1][-1])
+            i += 1
+            continue
+        if char == "・":
+            result.append(" ")
+            i += 1
+            continue
+        if char == "ン":
+            # ん before a labial consonant (b/p/m) is conventionally romanized as
+            # "m", not "n" (サンバ -> "samba", not "sanba" - a real phonetic
+            # assimilation rule, not a stylistic choice).
+            nxt = chars[i + 1:i + 2]
+            nxt_romaji = _KATAKANA_SINGLE.get(nxt, "")
+            result.append("m" if nxt_romaji[:1] in ("b", "p", "m") else "n")
+            i += 1
+            continue
+        result.append(_KATAKANA_SINGLE.get(char, char))
+        i += 1
+    return "".join(result)
 
 
 def slug(value: str, strip_year: bool = True) -> str:
@@ -78,6 +160,15 @@ def title_variants(value: str) -> set[str]:
             variants.add(transliterated)
             variants.add(translit_slug(candidate, yot="j"))
             variants.add(translit_slug(candidate, yot="i"))
+        # "дж" is the common Cyrillic digraph for the English "j" sound (as in
+        # "джаz"/"jazz", "джинсы"/"jeans"), which a per-character transliteration
+        # ("d"+"zh") misses entirely - it never produces anything resembling "jazz".
+        dzh_variant = translit_slug(_DZH_DIGRAPH_RE.sub("j", candidate))
+        if dzh_variant:
+            variants.add(dzh_variant)
+        katakana_variant = slug(katakana_to_romaji(candidate))
+        if katakana_variant:
+            variants.add(katakana_variant)
     return {item for item in variants if item}
 
 
@@ -164,6 +255,29 @@ def musicbrainz_album_info(artist: str, album: str) -> dict:
         release_date = str(release.get("date") or "")
         releases.append((not exact_name, release_date or "9999", release))
 
+    if not releases:
+        # A stylized mixed-script logo name (e.g. "Animal ДжаZ") won't match a
+        # plain-text query - resolve it via MusicBrainz's alias-aware artist
+        # search first, then retry under their canonical name.
+        artist_query = urllib.parse.urlencode({"query": artist, "limit": 1, "fmt": "json"})
+        artist_data = _json_request(f"{MUSICBRAINZ_BASE}/artist?{artist_query}")
+        artist_candidates = artist_data.get("artists") or []
+        if artist_candidates and int(artist_candidates[0].get("score") or 0) >= 90:
+            canonical_artist = str(artist_candidates[0].get("name") or "")
+            if canonical_artist and slug(canonical_artist) != slug(artist):
+                retry_query = urllib.parse.urlencode(
+                    {"query": f'artist:"{canonical_artist}" AND release:"{album}"', "limit": 5, "fmt": "json"}
+                )
+                retry_data = _json_request(f"{MUSICBRAINZ_BASE}/release?{retry_query}")
+                for release in retry_data.get("releases", []):
+                    credit = release.get("artist-credit") or []
+                    release_artist = credit[0].get("name", "") if credit else ""
+                    if slug(release_artist) != slug(canonical_artist):
+                        continue
+                    exact_name = slug(release.get("title", "")) == slug(album)
+                    release_date = str(release.get("date") or "")
+                    releases.append((not exact_name, release_date or "9999", release))
+
     ordered_releases = sorted(releases, key=lambda item: (item[0], item[1]))
     earliest_date = next(
         (date for _, date, _ in ordered_releases if re.match(r"(?:19|20)\d{2}", date)),
@@ -211,14 +325,71 @@ def musicbrainz_album_info(artist: str, album: str) -> dict:
     return {"tracks": [], "durations": [], "artists": [], "year": ""}
 
 
-def musicbrainz_tracks(artist: str, album: str) -> list[str]:
-    """Compatibility wrapper for callers that only need the track list."""
-    return musicbrainz_album_info(artist, album)["tracks"]
-
-
 def artist_search(artist: str, api_key: str, limit: int = 12) -> list[dict]:
     data = lastfm_request("artist.search", {"artist": artist, "limit": limit}, api_key)
     return data.get("results", {}).get("artistmatches", {}).get("artist", [])
+
+
+_DEEZER_NO_PICTURE_HASH = "d41d8cd98f00b204e9800998ecf8427e"  # md5("") - Deezer's "no photo" placeholder
+
+
+def deezer_artist_image(artist: str) -> str:
+    """Look up an artist photo on Deezer's editorially-curated catalog.
+
+    Last.fm artist images are community-uploaded and occasionally get replaced with
+    unrelated spam (betting-site QR codes etc.) with no moderation. Deezer's artist
+    photos come from its own catalog, so they're used as the preferred source instead.
+    """
+    query = urllib.parse.urlencode({"q": artist, "limit": 5})
+    data = _json_request(f"https://api.deezer.com/search/artist?{query}")
+    results = [
+        r for r in (data.get("data") or [])
+        if _DEEZER_NO_PICTURE_HASH not in (r.get("picture_medium") or "")
+    ]
+    if not results:
+        return ""
+    exact = [r for r in results if slug(r.get("name", "")) == slug(artist)]
+    candidates = exact or results
+    best = max(candidates, key=lambda r: r.get("nb_fan", 0))
+    return best.get("picture_medium") or ""
+
+
+def artist_top_tracks(artist: str, api_key: str, limit: int = 20) -> list[str]:
+    """Return the artist's top tracks by playcount, for use as a stand-in tracklist
+    when an informal "best of"/"Сборник"-style album has no real catalog release.
+
+    Last.fm's per-user scrobble tagging means the same song often shows up several
+    times under near-identical spellings (e.g. "Я Это Ты", "Я - Это Ты", "Ты это я")
+    - fetch extra and dedupe by slug so the compilation doesn't repeat one song
+    under multiple names while missing others.
+    """
+    data = lastfm_request(
+        "artist.getTopTracks", {"artist": artist, "limit": limit * 3, "autocorrect": "1"}, api_key
+    )
+    tracks = data.get("toptracks", {}).get("track", [])
+    if isinstance(tracks, dict):
+        tracks = [tracks]
+    trailing_bracket_re = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*$")
+    seen = set()
+    result = []
+    for track in tracks:
+        name = track.get("name") or ""
+        if not name:
+            continue
+        bare_name = name
+        while True:
+            stripped = trailing_bracket_re.sub("", bare_name)
+            if stripped == bare_name:
+                break
+            bare_name = stripped
+        key = slug(bare_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(name)
+        if len(result) >= limit:
+            break
+    return result
 
 
 def artist_album_entries(artist: str, api_key: str, limit: int = 50) -> list[dict]:
@@ -242,7 +413,13 @@ def popular_album_entries(artist: str, api_key: str, studio_limit: int = 15) -> 
     entries = artist_album_entries(artist, api_key)
     if not entries:
         return [], []
-    threshold = max(500, int(max(item["playcount"] for item in entries) * 0.05))
+    top_playcount = max(item["playcount"] for item in entries)
+    relative_threshold = int(top_playcount * 0.05)
+    # The 500-play floor filters noise for well-known artists (garbage entries hiding
+    # among real hits), but for a niche artist whose own top album never reaches 500
+    # plays, it demands more plays than their most popular release has - excluding
+    # every album, including the top one. Only apply the floor once it's reachable.
+    threshold = max(500, relative_threshold) if top_playcount >= 500 else relative_threshold
     filtered = [item for item in entries if item["playcount"] >= threshold and not JUNK_ALBUM_RE.search(item["name"])]
     studios = [item for item in filtered if not SINGLE_EP_RE.search(item["name"])][:studio_limit]
     singles = [item for item in filtered if SINGLE_EP_RE.search(item["name"])]
@@ -589,6 +766,21 @@ def verified_album_info(
     consensus = []
     selected_source = ""
 
+    if preferred_source and preferred_source.casefold() == "artist-top-tracks":
+        top_tracks = artist_top_tracks(info.get("artist") or artist, api_key)
+        if not top_tracks:
+            info["tracks"] = []
+            info["error"] = f"no top tracks found for {info.get('artist') or artist!r}"
+            info["verified_by"] = []
+            return info
+        info["tracks"] = top_tracks
+        info["selected_source"] = "artist-top-tracks"
+        info["verified_by"] = ["artist-top-tracks"]
+        info["single_source"] = True
+        info["selected_by_user"] = True
+        info["compilation_fallback"] = True
+        return info
+
     if preferred_source:
         selected_source = next(
             (
@@ -641,6 +833,18 @@ def verified_album_info(
             info["selection_required"] = True
             return info
         elif not consensus:
+            top_tracks = (
+                artist_top_tracks(info.get("artist") or artist, api_key)
+                if _COMPILATION_ALBUM_RE.search(album)
+                else []
+            )
+            if top_tracks:
+                info["tracks"] = top_tracks
+                info["selected_source"] = "artist-top-tracks"
+                info["verified_by"] = ["artist-top-tracks"]
+                info["single_source"] = True
+                info["compilation_fallback"] = True
+                return info
             info["tracks"] = []
             info["error"] = "no catalog track lists"
             info["verified_by"] = []

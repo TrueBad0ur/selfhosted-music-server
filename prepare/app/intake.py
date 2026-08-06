@@ -6,11 +6,9 @@ import re
 import os
 import shutil
 import uuid
-import urllib.request
 from pathlib import Path
 
 from mutagen import File as MutagenFile
-from mutagen.id3 import APIC
 
 from album import clean_album_dirname
 from checks import (
@@ -20,7 +18,8 @@ from checks import (
     strip_bad_chars,
     strip_watermarks,
 )
-from common import AUDIO_EXTENSIONS, audio_content_hash
+from common import AUDIO_EXTENSIONS, audio_content_hash, safe_component as _base_safe_component
+from download_music import _download_cover, embed_cover
 from metadata import (
     extract_title_from_stem,
     find_named_dir,
@@ -31,7 +30,6 @@ from metadata import (
 from process_file import process_file
 from tags import get_tags, set_tag, _set_year
 
-_INVALID_COMPONENT = re.compile(r"[\\/\x00-\x1f]")
 BYPASS_RELATIVE_DIR = Path("All") / "All"
 _SOURCE_FILENAME_ALBUM_RE = re.compile(r"_-_|_\d{5,}$|_$")
 
@@ -61,21 +59,6 @@ def _needs_enrichment(path: Path, album: str, title: str, artists: list[str], me
     )
 
 
-def _download_cover(url: str) -> tuple[bytes | None, str]:
-    if not url:
-        return None, ""
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request, timeout=15) as response:
-            data = response.read(10 * 1024 * 1024 + 1)
-            mime = response.headers.get_content_type()
-        if len(data) > 10 * 1024 * 1024 or not mime.startswith("image/"):
-            return None, ""
-        return data, mime
-    except Exception:
-        return None, ""
-
-
 def _apply_enriched_tags(path: Path, details: dict) -> None:
     media = MutagenFile(str(path), easy=False)
     if media is None:
@@ -89,16 +72,11 @@ def _apply_enriched_tags(path: Path, details: dict) -> None:
     media.save()
     cover_data, cover_mime = _download_cover(details.get("cover_url", ""))
     if cover_data and type(media).__name__ == "MP3":
-        media = MutagenFile(str(path), easy=False)
-        media.tags.delall("APIC")
-        media.tags.add(APIC(encoding=3, mime=cover_mime, type=3, desc="Cover", data=cover_data))
-        media.save()
+        embed_cover(path, cover_data, cover_mime)
 
 
 def safe_component(value: str, fallback: str) -> str:
-    value = strip_watermarks(strip_bad_chars(value or ""))
-    value = _INVALID_COMPONENT.sub("_", value).strip().strip(".")
-    return value or fallback
+    return _base_safe_component(strip_watermarks(strip_bad_chars(value or "")), fallback)
 
 
 def _unique_destination(directory: Path, filename: str, source: Path) -> tuple[Path, bool]:

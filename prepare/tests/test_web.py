@@ -57,7 +57,7 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json()["job_id"], "job")
         submit.assert_called_once_with(
-            "A — B", self.web._run_download, "A", "B", "lastfm"
+            "A — B", self.web._run_download, "A", "B", "lastfm", False, False
         )
 
     def test_download_returns_catalog_choices_and_accepts_selection(self):
@@ -89,7 +89,7 @@ class WebApiTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         submit.assert_called_once_with(
-            "A — B", self.web._run_download, "A", "B", "deezer"
+            "A — B", self.web._run_download, "A", "B", "deezer", False, False
         )
 
     def test_download_worker_keeps_key_out_of_arguments(self):

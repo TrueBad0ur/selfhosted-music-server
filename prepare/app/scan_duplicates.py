@@ -3,19 +3,42 @@ import re as _re
 from pathlib import Path
 from mutagen import File as MutagenFile
 
-from common import AUDIO_EXTENSIONS, is_excluded, _FORMAT_PRIORITY
+from common import AUDIO_EXTENSIONS, is_excluded, keeps_remixes, _FORMAT_PRIORITY
 from tags import _frame_text
-from lastfm import _title_slug
 
 _DUP_DELETE_VARIANT_RE = _re.compile(
-    r'\b(radio[\s.]?(?:edit|mix|version)|live(?:\s+(?:at|in|from|in\s+concert))?|remaster(?:ed)?|elements\s+live|in\s+concert)\b',
+    r'\b(radio[\s.]?(?:edit|mix|version)|live(?:\s+(?:at|in|from|in\s+concert))?|remaster(?:ed)?|'
+    r'elements\s+live|in\s+concert|remix(?:ed)?)\b',
+    _re.IGNORECASE,
+)
+# Same as above minus remix/remixed - used for albums marked to keep their
+# remixes, so a remix is never preferentially dropped over a duration-mismatched
+# original.
+_DUP_DELETE_VARIANT_NO_REMIX_RE = _re.compile(
+    r'\b(radio[\s.]?(?:edit|mix|version)|live(?:\s+(?:at|in|from|in\s+concert))?|remaster(?:ed)?|'
+    r'elements\s+live|in\s+concert)\b',
     _re.IGNORECASE,
 )
 
 
+def _dup_title_slug(title: str) -> str:
+    """Normalise a plain TITLE tag (not "Artist - Title", so no splitting on
+    " - " like lastfm._title_slug does - that would drop the song name and
+    keep only a trailing qualifier, e.g. "Decode - Live at Red Rocks").
+    "?" is kept since it's sometimes the only thing distinguishing two
+    otherwise-identical titles (The Wall's "In The Flesh?" vs "In The Flesh")."""
+    value = _re.sub(r"^\d+[\s.\-]+", "", title)
+    return _re.sub(r"[^\w?]", "", value.casefold())
+
+
 def _safe_dirname(name: str) -> str:
-    """Strip characters that are invalid in directory names."""
-    return _re.sub(r'[<>:"/\\|?*]', '', name).strip(' .')
+    """Strip characters that are invalid in directory names.
+
+    "?" is deliberately kept: this is a Linux filesystem, where it's a perfectly
+    valid character, and stripping it loses real information (e.g. Pink Floyd's
+    "In The Flesh?" vs the later reprise "In The Flesh" become indistinguishable).
+    """
+    return _re.sub(r'[<>:"/\\|*]', '', name).strip(' .')
 
 
 def _dup_score(fp: Path, artist_dir: str) -> tuple:
@@ -68,7 +91,7 @@ def scan_duplicates(root: Path, fix: bool) -> int:
                 title = str((f.tags.get("\xa9nam") or [""])[0]) or fpath.stem
             else:
                 title = fpath.stem
-            slug = _title_slug(title)
+            slug = _dup_title_slug(title)
             groups.setdefault(slug, []).append(fpath)
 
         dups = {slug: paths for slug, paths in groups.items() if len(paths) > 1}
@@ -78,6 +101,7 @@ def scan_duplicates(root: Path, fix: bool) -> int:
         albums_found += 1
         print(f"\n  {rel}")
 
+        dup_variant_re = _DUP_DELETE_VARIANT_NO_REMIX_RE if keeps_remixes(p) else _DUP_DELETE_VARIANT_RE
         artist_dir = p.parent.name
         for slug, paths in dups.items():
             ranked = sorted(paths, key=lambda fp: _dup_score(fp, artist_dir))
@@ -91,8 +115,8 @@ def scan_duplicates(root: Path, fix: bool) -> int:
                 dp_dur = getattr(getattr(MutagenFile(str(dp), easy=False), "info", None), "length", 0) or 0
                 dur_ok = keep_dur == 0 or dp_dur == 0 or abs(keep_dur - dp_dur) / keep_dur < 0.10
                 if not dur_ok:
-                    keep_is_edit = bool(_DUP_DELETE_VARIANT_RE.search(keep.stem))
-                    dp_is_edit   = bool(_DUP_DELETE_VARIANT_RE.search(dp.stem))
+                    keep_is_edit = bool(dup_variant_re.search(keep.stem))
+                    dp_is_edit   = bool(dup_variant_re.search(dp.stem))
                     if keep_is_edit and not dp_is_edit:
                         print(f"      [DUP] keep: {dp.name}")
                         print(f"            drop (variant): {keep.name}")

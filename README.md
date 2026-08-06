@@ -7,14 +7,18 @@
 ---
 
 
-Self-hosted music server based on [Navidrome](https://www.navidrome.org/) with [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI) integration for library analysis, instant mix, and similar track discovery.
+Self-hosted music server based on [Navidrome](https://www.navidrome.org/) with [AudioMuse-AI](https://github.com/NeptuneHub/AudioMuse-AI) integration for library analysis, instant mix, and similar track discovery, plus a metadata-cleanup/download pipeline and a small web UI for searching, downloading, and fixing the library from a browser.
 
 ## Repository Structure
 
 ```
 .
-├── application/            # Docker stack (Navidrome + AudioMuse-AI)
-└── prepare/            # Metadata checker, fixer, and downloader (single Docker image)
+├── application/
+│   ├── web/                 # Flask web UI (search/download/library/cleanup) at /tools/
+│   └── ...                  # Docker stack (Navidrome + AudioMuse-AI)
+└── prepare/                 # Metadata checker, fixer, and downloader (single Docker image)
+    ├── app/                 # All Python source
+    └── tests/                # unittest suite
 ```
 
 ---
@@ -87,14 +91,7 @@ cd application
 
 ### Analysis & Clustering Parameters
 
-Open `http://<server>:8000` to configure.
-
-**Dataset (current library):**
-- **13 598 tracks** total — all have Essentia 200-dim embeddings computed
-- **~1 926 tracks** used per clustering iteration (stratified sample across genres)
-- Clustering uses Essentia embeddings, computed during Analysis
-
-Values below are optimal for this dataset size (~13k tracks, embeddings enabled).
+Open `http://<server>:8000` to configure. Values below are tested on a ~6500 track library.
 
 **Analysis Parameters**
 
@@ -107,16 +104,16 @@ Values below are optimal for this dataset size (~13k tracks, embeddings enabled)
 
 | Parameter | Value | Notes |
 |---|---|---|
-| Clustering Algorithm | K-Means | only sklearn method with BLAS parallelism |
-| TOP Playlist Number | 20 | ~30 tracks/playlist at this library size |
-| Clustering Runs | 500 | best score 21.10; plateaus after ~480 runs |
+| Clustering Algorithm | K-Means | most stable for 5k+ tracks |
+| TOP Playlist Number | 20 | ~330 tracks/playlist |
+| Clustering Runs | 10 | quality/speed balance |
 | Max Distance | 0.65 | similarity radius |
 | Max Songs Per Cluster | 0 | unlimited |
-| PCA Components Min | 30 | |
-| PCA Components Max | 100 | retains more embedding info vs max=50 |
+| PCA Components Min | 10 | |
+| PCA Components Max | 40 | |
 | Min Songs Per Genre for Stratification | 25 | |
 | Stratified Sampling Target Percentile | 75 | |
-| Use Embeddings for Clustering | true | 200-dim Essentia embeddings; false only if embeddings not yet computed |
+| Use Embeddings for Clustering | false | uses standard audio features (BPM, key, energy); true only when CLAP_ENABLED=true in .env and Analysis re-run |
 
 **Score Weights** (each group sums to 1.0)
 
@@ -134,8 +131,8 @@ Values below are optimal for this dataset size (~13k tracks, embeddings enabled)
 
 | Parameter | Value |
 |---|---|
-| Min Clusters | 25 |
-| Max Clusters | 70 |
+| Min Clusters | 15 |
+| Max Clusters | 50 |
 
 > After changing clustering parameters re-run **Clustering** (Analysis not needed).
 > If mixes are too diverse
@@ -186,6 +183,50 @@ CLAP_ENABLED=true
 docker compose build && docker compose up -d
 ```
 
+
+---
+
+## Android Client — Tempo
+
+[TrueBad0ur/tempo](https://github.com/TrueBad0ur/tempo) is a personal fork of the (now
+unmaintained) [CappielloAntonio/tempo](https://github.com/CappielloAntonio/tempo) Subsonic
+client. The only change: a 4th **Web** button in the bottom nav, next to Home/Library/
+Download, that opens `<your-server-address>/tools/` (the library web UI in `application/web/`)
+in a Chrome Custom Tab — no server address is hardcoded, it reuses whatever server is already
+configured in the app. See that repo's `BUILDING.md` for how to build and sign it.
+
+---
+
+## Web UI — application/web/
+
+A small Flask app (`application/web/web.py` + `static/index.html`) served at `/tools/`, behind
+the same Google SSO as the rest of the stack. Tabs:
+
+- **Search** — search an artist, browse their popular albums (Last.fm), download any of them.
+- **Library** — browse what's already on disk; per-album "check missing" against the catalog and
+  fill in gaps.
+- **Downloads** — live log of running/finished download jobs.
+- **Cleanup** — run `prepare_music.py` preview/fix from the browser, plus a **Navidrome catalog
+  duplicates** panel (see below).
+- **Upload** — drag-and-drop staged uploads into the library (goes through the same tag-cleanup
+  pipeline as `intake.py`).
+
+Any album download (Search or Library) has a per-row **"Allow partial"** checkbox — same meaning
+as `download_music.py --allow-partial`.
+
+```bash
+cd application
+docker compose build web && docker compose up -d web
+```
+
+### Navidrome catalog duplicates
+
+Overlapping rescans fired close together right after a fresh publish can race Navidrome's own
+scanner into inserting the same track path twice — each row is individually valid (the file
+really exists), so a normal rescan doesn't notice or merge them. Detected/fixed via
+`prepare_music.py --navidrome-dupes-only [--fix]` or the Cleanup tab's button; fixing writes
+directly to Navidrome's SQLite DB (`NAVIDROME_DB_PATH`, mounted read-write) using its own
+WAL-mode locking, so the service doesn't need to be stopped.
 
 ---
 
@@ -269,6 +310,19 @@ touch "/music/Artist/Album/.skip"
 
 Useful when the local files intentionally diverge from the Last.fm tracklist (e.g. manually curated version, local recordings).
 
+### Keeping remix tracks
+
+By default, cleanup (`scan_variants`/`scan_duplicates`) always drops a remix track in favor of the plain original. Place a `.keep-remixes` file inside an album folder to opt that album out — its remixes are then left alone (never grouped with, or preferred against, the original) while every other variant type (live, instrumental, demo, etc.) is still cleaned up as usual:
+
+```bash
+touch "/music/Artist/Album/.keep-remixes"
+# or via CLI:
+docker compose run --rm prepare /music/Artist/Album --keep-remixes
+docker compose run --rm prepare /music/Artist/Album --unset-keep-remixes
+```
+
+When downloading a new album, pass `--keep-remixes` to `download_music.py` (or check "remixes" in the web UI, both in Search and per-album in Library) to set the marker automatically after publish.
+
 ### Directory structure for album/albumartist detection
 
 ```
@@ -334,15 +388,21 @@ python3 download_music.py --track "Rammstein" "Du hast" --out /music/Rammstein/M
 
 # Dry-run — show what would be downloaded without doing anything
 python3 download_music.py --album "Rammstein" "Mutter" --dest /music/Rammstein/Mutter --dry-run
+
+# Publish whatever tracks succeed even if some fail, instead of discarding the whole album
+python3 download_music.py --album "Rammstein" "Mutter" --out /music --allow-partial
+
+# Pick a specific catalog when sources disagree on the tracklist
+python3 download_music.py --album "Rammstein" "Mutter" --out /music --catalog-source musicbrainz
 ```
 
 ### How it works
 
-1. **Last.fm** `album.getInfo` → fetches the official track list (title, artist, year)
-2. Compares against files already in `--dest` using slug-normalized matching (ignores case, punctuation, spaces) — existing tracks are skipped
-3. For each missing track: searches YouTube with `ytsearch5:Artist Title`, filters results to `duration < 600s` (avoids full-album uploads), downloads the first match as MP3 at best quality via ffmpeg
-4. Renames the downloaded file to `Artist - Title.mp3`
-5. Writes correct `artist`, `title`, `album`, `year` ID3 tags via mutagen
+1. Tracklist is verified against multiple catalogs (Last.fm, MusicBrainz, Deezer, iTunes) and requires either agreement between two of them or an explicit `--catalog-source` pick — avoids publishing a wrong/incomplete tracklist from a single bad source.
+2. Compares against files already in `--dest` using slug-normalized matching (ignores case, punctuation, spaces, transliteration) — existing tracks are skipped.
+3. For each missing track: searches YouTube (+YouTube Music, SoundCloud, Zaycev, Pesni.me), scores candidates on title/artist/duration match, downloads the best one as MP3 via yt-dlp/ffmpeg. Cyrillic and Japanese katakana titles are transliterated to romaji for matching against romanized upload titles; kanji titles fall back to duration + the artist's own YouTube "Topic" channel.
+4. All tracks stage into a hidden temp folder first — the whole album is only moved into place once **every** track succeeds (pass `--allow-partial` to publish whatever did succeed instead). A lock file prevents two concurrent runs (a web click + a manual CLI run) from both redownloading the same album.
+5. Writes canonical `artist`, `title`, `album`, `year`, `albumartist` ID3 tags — albumartist and filenames are derived from the artist's actual folder name, not the catalog's spelling, so a folder like "Junko Ohashi" never ends up with files tagged "大橋純子".
 
 ### After downloading
 
@@ -378,6 +438,7 @@ A track is skipped if a file whose name (after stripping the `Artist - ` prefix)
 - YouTube search may not find very obscure tracks or ones with unusual titles
 - Tracks longer than 10 minutes are filtered out (catches full-album uploads misidentified as singles) — this can miss legitimate long tracks like live recordings
 - The script downloads one track at a time sequentially (no parallel downloads)
+- Kanji-titled tracks with no katakana and no candidate on the artist's own YouTube "Topic" channel can't be matched at all (no kanji→romaji dictionary) — those need a manual `--catalog-source` retry or are simply unavailable under a matchable title
 
 ### Docker
 
@@ -494,30 +555,6 @@ docker compose start navidrome
 ---
 
 ## Known Issues & Fixes
-
-### AudioMuse-AI: AMD GPU acceleration (ROCm)
-
-The `audiomuse-worker` container is configured to use the discrete AMD GPU via ROCm for ONNX inference (Essentia + CLAP models).
-
-**How it works:**
-- `audiomuse-patch/Dockerfile` installs ROCm 6.4 runtime and `onnxruntime-rocm` inside the container
-- `/dev/dri` and `/dev/kfd` are mapped from host; groups `video` (44) and `render` (992) are added
-- `HSA_OVERRIDE_GFX_VERSION=10.3.0` is required because gfx1032 (RX 6700S / Navi 23) is not officially supported by ROCm — this makes it run as gfx1030
-- `ROCR_VISIBLE_DEVICES=0` restricts ROCm to the discrete GPU only (integrated 680M is not a ROCm device and never appears)
-
-**Monitor GPU load:**
-```bash
-sudo nvtop
-```
-
-The discrete GPU (RX 6700S) should hit ~99% during analysis. The integrated GPU (680M) will stay at 0% — it has no ROCm compute access.
-
-**Patched files** (in `audiomuse-patch/tasks/`):
-- `clap_analyzer.py` — adds `ROCMExecutionProvider` fallback when CUDA is unavailable
-- `analysis.py` — same, for Essentia model sessions
-- `collection_manager.py` — treats PocketBase 404 as empty (PostgreSQL deployment has no PocketBase)
-
----
 
 ### AudioMuse-AI: `AttributeError: 'Job' object has no attribute 'get_id'`
 

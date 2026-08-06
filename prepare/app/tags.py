@@ -48,8 +48,6 @@ def get_tag_values(f, key: str) -> list[str]:
 def get_tags(f) -> dict:
     """Return a normalized dict: artist, albumartist, album, title."""
     tags = {}
-    t = type(f).__name__
-
     for key in ("artist", "albumartist", "album", "title", "tracknumber"):
         values = get_tag_values(f, key)
         if values:
