@@ -176,7 +176,7 @@ def _download_command(args, root: Path) -> int:
         if not studios and not singles:
             print(f"No popular albums found for '{artist}'")
             return 1
-        artist_dir = find_named_dir(root, artist)
+        artist_dir = find_named_dir(root, artist, fuzzy=True)
         existing = {
             slug(directory.name)
             for directory in artist_dir.iterdir()

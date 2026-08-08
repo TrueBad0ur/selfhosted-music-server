@@ -53,8 +53,11 @@ _TRAILING_PAREN_RE = re.compile(r"\s*[\(\[][\d./\-]+[\)\]]\s*$")
 
 
 def _find_artist_folder(music_root: Path, requested: str, canonical: str) -> Path:
-    return find_named_dir(music_root, requested) or find_named_dir(music_root, canonical) or (
-        music_root / safe_component(canonical, "Unknown Artist")
+    return (
+        find_named_dir(music_root, requested)
+        or find_named_dir(music_root, canonical)
+        or find_named_dir(music_root, requested, fuzzy=True)
+        or music_root / safe_component(canonical, "Unknown Artist")
     )
 
 
@@ -211,7 +214,14 @@ def _youtube_candidate_score(
     if not artist_matches:
         return -1
     score += 25.0
-    if artist_key and slug(str(candidate.get("channel") or "")) == artist_key:
+    # An artist's own channel is rarely named the exact bare artist slug - it's
+    # usually suffixed ("Uma2rman Band", "ArtistVEVO", "Artist Official"). A
+    # prefix match against any known spelling of the artist still reliably
+    # identifies channel ownership without needing an exact string match, and
+    # matters: without this bonus a same-scoring reupload (e.g. a lyrics-video
+    # aggregator channel) can outrank the artist's own upload on tie-breaking
+    # search-result order alone.
+    if channel_owner_slug and any(channel_owner_slug.startswith(k) for k in artist_keys if k):
         score += 15.0
     return score
 
@@ -1201,28 +1211,34 @@ def _cmd_download_album_locked(args) -> bool:
                 f"{safe_component(track_title, 'Untitled')}.mp3"
             )
             staged_path = staging_dir / filename
-            if not ytdlp_download(
-                artist_name,
-                track_title,
-                staged_path,
-                album=album_name,
-                expected_duration=expected_duration,
-                alt_artist=args.artist,
-            ):
-                failures += 1
-                continue
-            if not _write_canonical_tags(
-                staged_path, track_artists[track_number - 1], track_title, album_name,
-                info.get("year"), track_number, album_artist=folder_artist,
-            ):
-                failures += 1
-                continue
-            if cover_data and not embed_cover(staged_path, cover_data, cover_mime):
-                failures += 1
-                continue
-            staged_files.append((staged_path, destination_dir / filename))
-            if args.delay:
-                time.sleep(args.delay)
+            try:
+                if not ytdlp_download(
+                    artist_name,
+                    track_title,
+                    staged_path,
+                    album=album_name,
+                    expected_duration=expected_duration,
+                    alt_artist=args.artist,
+                ):
+                    failures += 1
+                    continue
+                if not _write_canonical_tags(
+                    staged_path, track_artists[track_number - 1], track_title, album_name,
+                    info.get("year"), track_number, album_artist=folder_artist,
+                ):
+                    failures += 1
+                    continue
+                if cover_data and not embed_cover(staged_path, cover_data, cover_mime):
+                    failures += 1
+                    continue
+                staged_files.append((staged_path, destination_dir / filename))
+            finally:
+                # Applies after every track, success or failure - a failed
+                # search is often a sign YouTube is already rate-limiting this
+                # IP, so skipping the pause on failure (as before) only made
+                # the very next request hit the same limit again.
+                if args.delay:
+                    time.sleep(args.delay)
 
         if failures and not args.allow_partial:
             print(

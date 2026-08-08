@@ -161,7 +161,7 @@ def _run_download(
 
 
 def _run_download_track(job_id: str, artist: str, title: str, album: str):
-    artist_dir = find_named_dir(MUSIC_DIR, artist) or MUSIC_DIR / _safe_component(artist, "Unknown Artist")
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True) or MUSIC_DIR / _safe_component(artist, "Unknown Artist")
     if album:
         album_dir = find_named_dir(artist_dir, album) or artist_dir / _safe_component(album, "Singles")
     else:
@@ -363,7 +363,7 @@ def search_artists_route():
 @app.route("/tools/api/artist/<path:artist>/albums")
 def artist_albums(artist: str):
     entries = artist_album_entries(artist, LASTFM_KEY, limit=200)
-    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
     existing = {
         slug(path.name) for path in artist_dir.iterdir() if path.is_dir()
     } if artist_dir else set()
@@ -407,7 +407,7 @@ def album_local_tracks():
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
     clean_album = re.sub(r"^\d{4}\s*-\s*", "", album)
-    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
     album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
     disk_files, _ = _disk_titles(album_dir) if album_dir else ([], set())
     return jsonify([
@@ -423,7 +423,7 @@ def album_tracks():
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
     clean_album = re.sub(r"^\d{4}\s*-\s*", "", album)
-    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
     album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
     disk_files, disk_slugs = _disk_titles(album_dir) if album_dir else ([], set())
     catalog_source = request.args.get("source", "").strip()
@@ -456,7 +456,7 @@ def album_keep_remixes():
     keep = bool(body.get("keep"))
     if not artist or not album:
         return jsonify({"error": "artist and album required"}), 400
-    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
     album_dir = find_named_dir(artist_dir, album) if artist_dir else None
     if not album_dir:
         return jsonify({"error": "album not found on disk"}), 404
@@ -479,7 +479,7 @@ def track_sources():
     clean_album = re.sub(r"^\d{4}\s*-\s*", "", album) if album else None
     expected_duration = None
     if album:
-        artist_dir = find_named_dir(MUSIC_DIR, artist)
+        artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
         album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
         track_path = _find_track_file(album_dir, title) if album_dir else None
         if track_path:
@@ -501,7 +501,7 @@ def track_replace():
     if not artist or not album or not title or not source_url:
         return jsonify({"error": "artist, album, title and source_url required"}), 400
     clean_album = re.sub(r"^\d{4}\s*-\s*", "", album)
-    artist_dir = find_named_dir(MUSIC_DIR, artist)
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
     album_dir = find_named_dir(artist_dir, clean_album) if artist_dir else None
     track_path = _find_track_file(album_dir, title) if album_dir else None
     if not track_path:

@@ -8,6 +8,7 @@ import re
 import time
 import urllib.parse
 import urllib.request
+from difflib import SequenceMatcher
 from pathlib import Path
 
 LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/"
@@ -183,22 +184,37 @@ def title_on_disk(title: str, disk_slugs: set[str]) -> bool:
     return bool(title_variants(title) & disk_slugs)
 
 
-def find_named_dir(root: Path, name: str) -> Path | None:
+_FUZZY_NAME_THRESHOLD = 0.84
+
+
+def find_named_dir(root: Path, name: str, fuzzy: bool = False) -> Path | None:
+    """`fuzzy=True` also accepts a close same-script spelling variant (e.g.
+    "Uma2rman" vs a folder named "Uma2rmaH" - Last.fm itself is inconsistent
+    about which spelling it returns from different endpoints), picking the
+    single closest match above a strict similarity threshold. Only safe to
+    opt into for ARTIST-level lookups: album names within one artist are
+    often legitimately near-identical ("Best" vs "Best II"), so callers
+    resolving an album directory must leave this off."""
     exact = root / name
     if exact.is_dir():
         return exact
-    targets = {slug(name), translit_slug(name), translit_slug(name, yot="j")} - {""}
     if not root.is_dir():
         return None
+    targets = {slug(name), translit_slug(name), translit_slug(name, yot="j")} - {""}
+    name_slug = slug(name)
+    best_fuzzy: tuple[float, Path] | None = None
     for directory in root.iterdir():
-        variants = {
-            slug(directory.name),
-            translit_slug(directory.name),
-            translit_slug(directory.name, yot="j"),
-        }
-        if directory.is_dir() and variants & targets:
+        if not directory.is_dir():
+            continue
+        dir_slug = slug(directory.name)
+        variants = {dir_slug, translit_slug(directory.name), translit_slug(directory.name, yot="j")}
+        if variants & targets:
             return directory
-    return None
+        if fuzzy and len(name_slug) >= 4 and len(dir_slug) >= 4:
+            ratio = SequenceMatcher(None, name_slug, dir_slug).ratio()
+            if ratio >= _FUZZY_NAME_THRESHOLD and (best_fuzzy is None or ratio > best_fuzzy[0]):
+                best_fuzzy = (ratio, directory)
+    return best_fuzzy[1] if best_fuzzy else None
 
 
 def best_cover_url(images: list[dict], preferred: str | None = None) -> str:
@@ -242,48 +258,67 @@ def lastfm_request(method: str, params: dict, api_key: str, timeout: float = 15)
     return _json_request(f"{LASTFM_BASE}?{query}", timeout)
 
 
+def _credit_matches_artist(credit: list, target: str) -> bool:
+    """A release's artist-credit can be spelled differently than the artist
+    entity itself (e.g. Uma2rman is credited as the stylized "Uma2rmaH" on
+    some releases) - match against either the credited-as name or the
+    underlying artist's canonical name, not just the former."""
+    if not credit:
+        return False
+    entry = credit[0]
+    credited_name = entry.get("name", "")
+    canonical_name = (entry.get("artist") or {}).get("name", "")
+    target_slug = slug(target)
+    return slug(credited_name) == target_slug or slug(canonical_name) == target_slug
+
+
 def musicbrainz_album_info(artist: str, album: str) -> dict:
     query = urllib.parse.urlencode({"query": f'artist:"{artist}" AND release:"{album}"', "limit": 5, "fmt": "json"})
     data = _json_request(f"{MUSICBRAINZ_BASE}/release?{query}")
     releases = []
     for release in data.get("releases", []):
         credit = release.get("artist-credit") or []
-        release_artist = credit[0].get("name", "") if credit else ""
-        if slug(release_artist) != slug(artist):
+        if not _credit_matches_artist(credit, artist):
             continue
         exact_name = slug(release.get("title", "")) == slug(album)
         release_date = str(release.get("date") or "")
-        releases.append((not exact_name, release_date or "9999", release))
+        is_special_edition = bool(release.get("disambiguation"))
+        releases.append((not exact_name, is_special_edition, release_date or "9999", release))
 
     if not releases:
-        # A stylized mixed-script logo name (e.g. "Animal ДжаZ") won't match a
-        # plain-text query - resolve it via MusicBrainz's alias-aware artist
-        # search first, then retry under their canonical name.
+        # A stylized/mixed-script per-release credit (e.g. Uma2rman is
+        # credited as "Uma2rmaH" on some releases) means MusicBrainz's own
+        # `artist:` text search can miss the release even under the artist's
+        # canonical name - resolve the artist to their MBID via alias-aware
+        # artist search, then retry with `arid:`, which matches every release
+        # regardless of how that specific release spells the credit.
         artist_query = urllib.parse.urlencode({"query": artist, "limit": 1, "fmt": "json"})
         artist_data = _json_request(f"{MUSICBRAINZ_BASE}/artist?{artist_query}")
         artist_candidates = artist_data.get("artists") or []
         if artist_candidates and int(artist_candidates[0].get("score") or 0) >= 90:
-            canonical_artist = str(artist_candidates[0].get("name") or "")
-            if canonical_artist and slug(canonical_artist) != slug(artist):
+            artist_mbid = str(artist_candidates[0].get("id") or "")
+            if artist_mbid:
                 retry_query = urllib.parse.urlencode(
-                    {"query": f'artist:"{canonical_artist}" AND release:"{album}"', "limit": 5, "fmt": "json"}
+                    {"query": f'arid:{artist_mbid} AND release:"{album}"', "limit": 5, "fmt": "json"}
                 )
                 retry_data = _json_request(f"{MUSICBRAINZ_BASE}/release?{retry_query}")
                 for release in retry_data.get("releases", []):
-                    credit = release.get("artist-credit") or []
-                    release_artist = credit[0].get("name", "") if credit else ""
-                    if slug(release_artist) != slug(canonical_artist):
-                        continue
                     exact_name = slug(release.get("title", "")) == slug(album)
                     release_date = str(release.get("date") or "")
-                    releases.append((not exact_name, release_date or "9999", release))
+                    is_special_edition = bool(release.get("disambiguation"))
+                    releases.append((not exact_name, is_special_edition, release_date or "9999", release))
 
-    ordered_releases = sorted(releases, key=lambda item: (item[0], item[1]))
+    # Prefer the plain/standard release over a deluxe/gift/special edition
+    # when both otherwise tie (exact title match, same date) - special
+    # editions often bundle short reprise/interlude fragments as separate
+    # "tracks" that were never released or uploaded on their own, which just
+    # produces a wall of unfindable-track errors during download.
+    ordered_releases = sorted(releases, key=lambda item: (item[0], item[1], item[2]))
     earliest_date = next(
-        (date for _, date, _ in ordered_releases if re.match(r"(?:19|20)\d{2}", date)),
+        (date for _, _, date, _ in ordered_releases if re.match(r"(?:19|20)\d{2}", date)),
         "",
     )
-    for _, release_date, release in ordered_releases:
+    for _, _, release_date, release in ordered_releases:
         time.sleep(1.05)
         params = urllib.parse.urlencode({"inc": "recordings+artist-credits", "fmt": "json"})
         detail = _json_request(f"{MUSICBRAINZ_BASE}/release/{release['id']}?{params}")
