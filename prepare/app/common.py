@@ -20,6 +20,7 @@ _FORMAT_PRIORITY = {'.flac': 0, '.wav': 1, '.ape': 2, '.m4a': 3, '.mp3': 4,
                     '.aac': 5, '.ogg': 6, '.opus': 7, '.wma': 8}
 
 KEEP_REMIXES_MARKER = ".keep-remixes"
+PLAYLIST_FOLDER_MARKER = ".playlist"
 
 _INVALID_COMPONENT = _re.compile(r"[\\/\x00-\x1f]")
 
@@ -29,6 +30,17 @@ def keeps_remixes(album_dir: Path) -> bool:
     scan_variants/scan_duplicates otherwise always treat a remix as a
     disposable variant of its original."""
     return (album_dir / KEEP_REMIXES_MARKER).exists()
+
+
+def is_playlist_folder(folder: Path) -> bool:
+    """True if this folder is marked as a loose collection of unrelated
+    singles (e.g. anime OP/ED themes grouped by series) rather than one
+    physical album - like the built-in EXCLUDE_DIRS playlist folders, its
+    name is forced onto `album` but each track's own artist/albumartist and
+    year are left alone, and it's skipped entirely by year/track-number
+    normalization, which otherwise assume every file in a folder belongs to
+    the same release."""
+    return (folder / PLAYLIST_FOLDER_MARKER).exists()
 
 
 def safe_component(value: str, fallback: str) -> str:

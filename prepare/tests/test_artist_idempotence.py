@@ -80,6 +80,59 @@ class ArtistIdempotenceTests(unittest.TestCase):
             process_file(path, False, False, True, True)
         self.assertEqual(output.getvalue(), "")
 
+    def test_punctuation_only_artist_fragment_is_dropped_and_stays_dropped(self):
+        album = Path(self.temp.name) / "алёна швец" / "первое свидание"
+        album.mkdir(parents=True)
+        path = album / "алёна швец - первое свидание.flac"
+        subprocess.run([
+            "ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=0.05", str(path),
+        ], check=True)
+        media = MutagenFile(path)
+        # A stylized name ending in a period ("алёна швец.") that got split
+        # into ["алёна швец", "."] by an earlier pass - the "." must not be
+        # kept as a second artist.
+        media["artist"] = ["алёна швец", "."]
+        media["albumartist"] = ["алёна швец"]
+        media["album"] = ["первое свидание"]
+        media["title"] = ["первое свидание"]
+        media.save()
+
+        process_file(path, True, False, True, True)
+        self.assertEqual(MutagenFile(path).get("artist"), ["алёна швец"])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            process_file(path, False, False, True, True)
+        self.assertEqual(output.getvalue(), "")
+
+    def test_junk_baked_into_a_single_artist_string_is_cleaned(self):
+        # The real-world shape of the bug: not a genuine multi-value frame,
+        # but ONE stored value that already contains the embedded "; ." -
+        # e.g. from get_tags() joining a corrupted multi-value frame back
+        # into a single string on an earlier pass.
+        album = Path(self.temp.name) / "алёна швец" / "первое свидание"
+        album.mkdir(parents=True)
+        path = album / "алёна швец - первое свидание.flac"
+        subprocess.run([
+            "ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=0.05", str(path),
+        ], check=True)
+        media = MutagenFile(path)
+        media["artist"] = ["алёна швец; ."]
+        media["albumartist"] = ["алёна швец"]
+        media["album"] = ["первое свидание"]
+        media["title"] = ["первое свидание"]
+        media.save()
+
+        process_file(path, True, False, True, True)
+        self.assertEqual(MutagenFile(path).get("artist"), ["алёна швец"])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            process_file(path, False, False, True, True)
+        self.assertEqual(output.getvalue(), "")
+
     def test_album_title_fragments_are_not_kept_as_artists(self):
         album_name = "Work One; Work Two"
         album = Path(self.temp.name) / "Conductor" / album_name

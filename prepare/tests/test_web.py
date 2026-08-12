@@ -162,6 +162,55 @@ class WebApiTests(unittest.TestCase):
         tracks, _ = self.web._disk_titles(album)
         self.assertEqual([number for number, _ in tracks], [1, 2])
 
+    def test_delete_track_removes_file_and_keeps_others(self):
+        album = self.web.MUSIC_DIR / "DelArtist" / "DelAlbum"
+        album.mkdir(parents=True)
+        keep = album / "DelArtist - Keep.mp3"
+        gone = album / "DelArtist - Gone.mp3"
+        for path, title in ((keep, "Keep"), (gone, "Gone")):
+            subprocess.run([
+                "ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                "sine=frequency=440:duration=0.05", "-q:a", "9", str(path),
+            ], check=True)
+            tags = EasyID3(path)
+            tags["title"] = [title]
+            tags.save()
+
+        with patch.object(self.web, "trigger_navidrome_rescan", return_value=(True, "ok")):
+            response = self.client.post(
+                "/tools/api/library/delete-track",
+                json={"artist": "DelArtist", "album": "DelAlbum", "title": "Gone"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(gone.exists())
+        self.assertTrue(keep.exists())
+
+    def test_delete_track_missing_returns_404(self):
+        response = self.client.post(
+            "/tools/api/library/delete-track",
+            json={"artist": "NoSuchArtist", "album": "NoAlbum", "title": "Nothing"},
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_delete_album_removes_tracks_but_keeps_folder(self):
+        album = self.web.MUSIC_DIR / "DelArtist2" / "DelAlbum2"
+        album.mkdir(parents=True)
+        path = album / "DelArtist2 - Song.mp3"
+        subprocess.run([
+            "ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=0.05", "-q:a", "9", str(path),
+        ], check=True)
+
+        with patch.object(self.web, "trigger_navidrome_rescan", return_value=(True, "ok")):
+            response = self.client.post(
+                "/tools/api/library/delete-album",
+                json={"artist": "DelArtist2", "album": "DelAlbum2"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["deleted_files"], 1)
+        self.assertTrue(album.is_dir())
+        self.assertEqual(list(album.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

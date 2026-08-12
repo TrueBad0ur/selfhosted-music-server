@@ -207,6 +207,18 @@ def artist_from_filename(stem: str) -> str | None:
         return None
     return candidate
 
+def artist_from_trailing_parens(stem: str) -> str | None:
+    """Extract artist from a '... - Title (Artist)' filename stem - the
+    convention used by rips (e.g. AniTousen anime OP/ED collections) that
+    credit the performer in trailing parens rather than a leading prefix,
+    which artist_from_filename() can't handle (it would grab the episode/
+    season label before the first ' - ' instead)."""
+    m = _re.search(r"\(([^()]+)\)\s*$", stem)
+    if not m:
+        return None
+    candidate = m.group(1).strip()
+    return candidate or None
+
 def artist_from_path(path: Path) -> str | None:
     """Walk up the directory tree to find artist name."""
     parts = list(path.parents)
@@ -238,13 +250,38 @@ def _dedup(seq: list) -> list:
             out.append(x)
     return out
 
+_NAME_CONTENT_RE = _re.compile(r"\w")
+
+
+def _is_name_fragment(value: str) -> bool:
+    """A split piece with no letters/digits at all (e.g. a stray "." left
+    over when an artist's own stylized name ends in a period, like "алёна
+    швец.") isn't a second artist - without this filter it gets kept as one,
+    and every later re-join/re-split pass (get_tags() joins multi-value
+    artist with "; ", check_artists() splits on ";") re-manufactures it
+    forever instead of ever collapsing back to the single real name."""
+    return bool(_NAME_CONTENT_RE.search(value))
+
+
+def clean_artist_string(artist: str) -> str:
+    """Strip junk (letterless/digitless) segments out of a single semicolon-
+    joined artist string, e.g. "алёна швец; ." -> "алёна швец". Separate from
+    check_artists(): that only fires when 2+ *real* names remain, so a lone
+    junk segment tacked onto one real artist would never get cleaned there -
+    it isn't "multiple artists", just one artist with debris attached."""
+    if ";" not in artist:
+        return artist
+    parts = [p.strip() for p in artist.split(";") if p.strip() and _is_name_fragment(p)]
+    return "; ".join(parts) if parts else artist
+
+
 def _split_and_expand(raw_parts: list) -> list:
     result = []
     for part in raw_parts:
         main, feats = _extract_feat_from_parens(part)
         result.append(main)
         result.extend(feats)
-    return _dedup(result)
+    return _dedup(p for p in result if _is_name_fragment(p))
 
 def check_artists(tags: dict) -> list:
     """Detect multiple artists using cascade separators (;, /, ,, feat/ft outside parens)."""
@@ -252,22 +289,22 @@ def check_artists(tags: dict) -> list:
     if not artist:
         return []
     if ";" in artist:
-        parts = [p.strip() for p in artist.split(";") if p.strip()]
+        parts = [p.strip() for p in artist.split(";") if p.strip() and _is_name_fragment(p)]
         if len(parts) > 1:
             return _split_and_expand(parts)
     if "/" in artist:
-        parts = [p.strip() for p in artist.split("/") if p.strip()]
+        parts = [p.strip() for p in artist.split("/") if p.strip() and _is_name_fragment(p)]
         if len(parts) > 1:
             return _split_and_expand(parts)
     if "," in artist:
-        parts = [p.strip() for p in artist.split(",") if p.strip()]
+        parts = [p.strip() for p in artist.split(",") if p.strip() and _is_name_fragment(p)]
         if len(parts) > 1:
             return _split_and_expand(parts)
     no_parens = _re.sub(r"\([^)]*\)", "", artist)
     m = _re.search(r"\s+(?:feat\.?|ft\.?)\s+", no_parens, _re.IGNORECASE)
     if m:
         sep_pat = _re.compile(r"\s+(?:feat\.?|ft\.?)\s+", _re.IGNORECASE)
-        parts = [p.strip() for p in sep_pat.split(no_parens) if p.strip()]
+        parts = [p.strip() for p in sep_pat.split(no_parens) if p.strip() and _is_name_fragment(p)]
         if len(parts) > 1:
             return parts
     return []

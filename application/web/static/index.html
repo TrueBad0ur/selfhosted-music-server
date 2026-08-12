@@ -205,6 +205,10 @@ input[type=text]::placeholder { color: #6a6a6a; }
   <span id="st-hdr-rescan" style="font-size:12px;color:var(--muted);white-space:nowrap"></span>
 </header>
 
+<div id="youtube-status-banner" style="display:none;background:var(--error);color:#fff;padding:8px 16px;font-size:13px;text-align:center">
+  ⚠️ <span id="youtube-status-text"></span>
+</div>
+
 <!-- SEARCH -->
 <div id="tab-search" class="tab active">
   <div class="row">
@@ -313,14 +317,15 @@ input[type=text]::placeholder { color: #6a6a6a; }
       <h3>Staged files</h3>
       <span style="margin-left:auto;display:flex;gap:8px">
         <button class="btn sm secondary" onclick="loadIncoming()">Refresh</button>
-        <button class="btn sm success-btn" id="publish-btn" onclick="publishIncoming(false)">Clean & publish</button>
-        <button class="btn sm secondary" id="bypass-btn" onclick="publishIncoming(true)">Bypass to All/All</button>
+        <button class="btn sm success-btn" id="publish-btn" onclick="publishIncoming()">Clean & publish</button>
       </span>
     </div>
     <div style="padding:12px 16px;color:var(--muted);font-size:12px">
-      Uploads stay outside Navidrome until explicitly published. Bypass preserves tags and routes files to excluded All/All.
+      Uploads stay outside Navidrome until explicitly published. Leave Artist/Album blank to auto-detect from tags, or set
+      them to file into an existing artist/album (pick from the dropdown) or a brand new one (just type a name).
     </div>
     <div id="incoming-list"></div>
+    <datalist id="artist-datalist"></datalist>
   </div>
   <div class="rescan-row">
     <div>
@@ -843,6 +848,7 @@ function renderLib(q='') {
           </label>
           <button class="btn xs" id="lfill-${akey}" style="display:none;margin-left:4px">↓ Fill</button>
           <span id="lfill-st-${akey}" style="font-size:12px;margin-left:4px"></span>
+          <button class="btn xs danger" id="ldelalb-${akey}" style="margin-left:4px" title="Delete all tracks in this album (folder stays, empty)">🗑</button>
         </div>
         <div class="lib-alb-tracks" id="ltracks-${akey}">
           <div class="tracks-loading"><div class="spinner"></div>Loading…</div>
@@ -864,6 +870,8 @@ function renderLib(q='') {
       if (chk) chk.addEventListener('click', e => { e.stopPropagation(); checkAlbumMissing(akey, _libAlbMeta[akey]); });
       const remixChk = sec.querySelector(`#lremix-${akey}`);
       if (remixChk) remixChk.addEventListener('change', () => setAlbumKeepRemixes(akey, _libAlbMeta[akey], remixChk));
+      const delAlbBtn = sec.querySelector(`#ldelalb-${akey}`);
+      if (delAlbBtn) delAlbBtn.addEventListener('click', e => { e.stopPropagation(); deleteAlbum(akey, _libAlbMeta[akey], delAlbBtn); });
     });
     list.appendChild(sec);
   });
@@ -886,6 +894,58 @@ async function setAlbumKeepRemixes(akey, meta, checkbox) {
     checkbox.checked = !keep; // revert on failure
   } finally {
     checkbox.disabled = false;
+  }
+}
+
+async function deleteAlbum(akey, meta, button) {
+  const {artist, album} = meta || {};
+  if (!artist) return;
+  if (!window.confirm(`Delete all tracks in "${artist} — ${album}"?\n\nThe (now empty) album folder is kept, so you can pick it again in Upload.`)) return;
+  button.disabled = true;
+  try {
+    const r = await fetch('api/library/delete-album', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({artist, album})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Delete failed');
+    _libAlbLoaded[akey] = false;
+    const latEl = document.getElementById('lat-'+akey);
+    if (latEl) latEl.textContent = '0 tracks';
+    const tracksEl = document.getElementById('ltracks-'+akey);
+    if (tracksEl) tracksEl.innerHTML = '<div class="tracks-loading" style="color:var(--muted)">No tracks found</div>';
+    loadLib(true);
+  } catch(e) {
+    window.alert(e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteTrack(ltkey, button) {
+  const {artist, album, title} = _trackMeta[ltkey] || {};
+  if (!artist) return;
+  if (!window.confirm(`Delete "${title}"?`)) return;
+  button.disabled = true;
+  try {
+    const r = await fetch('api/library/delete-track', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({artist, album, title})
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || 'Delete failed');
+    const row = button.closest('.lib-track-row');
+    if (row) row.remove();
+    const akey = ltkey.split('_lt')[0];
+    _libAlbLoaded[akey] = false;
+    const latEl = document.getElementById('lat-'+akey);
+    if (latEl) {
+      const remaining = Math.max(0, parseInt(latEl.textContent) - 1);
+      latEl.textContent = `${remaining} tracks`;
+    }
+  } catch(e) {
+    window.alert(e.message);
+    button.disabled = false;
   }
 }
 
@@ -954,12 +1014,17 @@ async function toggleLibAlbum(akey, meta) {
         <span style="flex:1">${esc(t.title)}</span>
         <span class="disk-ok" style="font-size:12px">✓</span>
         <button class="btn xs secondary" id="ltrreplace-${ltkey}" title="Find a different source and replace this file">⟳</button>
+        <button class="btn xs danger" id="ltrdelete-${ltkey}" title="Delete this track">🗑</button>
         <span id="ltrst-${ltkey}" style="font-size:11px;margin-left:4px"></span>
       </div>`;
     }).join('');
     tracks.querySelectorAll('button[id^="ltrreplace-"]').forEach(btn => {
       const ltkey = btn.id.slice('ltrreplace-'.length);
       btn.addEventListener('click', e => { e.stopPropagation(); replaceTrack(ltkey); });
+    });
+    tracks.querySelectorAll('button[id^="ltrdelete-"]').forEach(btn => {
+      const ltkey = btn.id.slice('ltrdelete-'.length);
+      btn.addEventListener('click', e => { e.stopPropagation(); deleteTrack(ltkey, btn); });
     });
   }catch(e){
     _libAlbLoaded[akey] = false;
@@ -1058,6 +1123,10 @@ async function loadJobs() {
       if (j.status !== 'running' && _seenJobStatus[j.id] === 'running') {
         Object.keys(_libAlbLoaded).forEach(k => _libAlbLoaded[k] = false);
         Object.keys(_albumState).forEach(k => _albumState[k].tracksLoaded = false);
+        // A dead VPN/proxy otherwise only shows up as a job ending in error
+        // with an oddly-sourced (or missing) track buried in its log - check
+        // right when that happens instead of waiting out the status cache.
+        if (j.status === 'error') checkYoutubeStatus(true);
       }
       _seenJobStatus[j.id] = j.status;
     });
@@ -1244,7 +1313,10 @@ async function doUpload(files) {
       if(xhr.status===200){
         const {staged=[]}=JSON.parse(xhr.responseText);
         const bad=staged.filter(x=>x.status==='error').length;
-        setSt('st-upload',bad?'error':'ok',`✓ Staged: ${staged.length}${bad?' ('+bad+' need bypass or replacement)':''}`);
+        // Missing artist isn't a failure, just a required field left blank -
+        // 'error' styling here would make it look like the upload itself
+        // broke, so this only ever uses the neutral/ok tones.
+        setSt('st-upload',bad?'':'ok',`✓ Staged: ${staged.length}${bad?' ('+bad+' need Artist set below)':''}`);
         loadIncoming();
       }
       else setSt('st-upload','error','Upload failed');
@@ -1255,21 +1327,50 @@ async function doUpload(files) {
   });
 }
 
+let _stagedNames = [];
+let _uploadLibrary = null;
+async function ensureUploadLibrary() {
+  if (_uploadLibrary) return _uploadLibrary;
+  try {
+    const r = await fetch('api/library');
+    _uploadLibrary = await r.json();
+  } catch (e) { _uploadLibrary = []; }
+  const dl = document.getElementById('artist-datalist');
+  dl.innerHTML = _uploadLibrary.map(a => `<option value="${esc(a.name)}">`).join('');
+  return _uploadLibrary;
+}
+
+async function onIncomingArtistChange(input) {
+  const lib = await ensureUploadLibrary();
+  const match = lib.find(a => a.name.toLowerCase() === input.value.trim().toLowerCase());
+  const dl = document.getElementById(input.dataset.albumDatalist);
+  if (dl) dl.innerHTML = match ? match.albums.map(al => `<option value="${esc(al.name)}">`).join('') : '';
+}
+
 async function loadIncoming() {
   const list=document.getElementById('incoming-list');
   list.innerHTML='<div class="st" style="padding:12px"><div class="spinner"></div>Loading…</div>';
+  ensureUploadLibrary();
   try {
     const r=await fetch('api/incoming');
     const files=await r.json();
     if(!files.length){list.innerHTML='<div class="st" style="padding:12px">No staged files</div>';return;}
+    _stagedNames = files.map(f => f.name);
     list.innerHTML=files.map((f,i)=>`
-      <div class="lib-alb-hdr" style="padding-left:14px;cursor:default">
-        <input type="checkbox" class="incoming-check" value="${esc(f.name)}" ${f.status==='ready'?'checked':''}>
-        <span class="an" style="flex:1">${esc(f.name)}</span>
-        <span style="color:${f.status==='ready'?'var(--success)':'var(--error)'}">
+      <div class="lib-alb-hdr" style="padding-left:14px;cursor:default;flex-wrap:wrap;gap:6px">
+        <span class="an" style="flex:1;min-width:120px">${esc(f.name)}</span>
+        <span style="color:${f.status==='ready'?'var(--success)':'var(--warn)'}">
           ${f.status==='ready'?esc(f.artist+' / '+f.album):esc(f.error)}
         </span>
-        <a class="btn xs secondary" href="api/incoming/${encodeURIComponent(f.name)}">Get</a>
+        <input type="text" class="incoming-artist" data-file="${esc(f.name)}" data-album-datalist="incoming-album-dl-${i}"
+          list="artist-datalist" placeholder="Artist${f.status==='ready'?' (auto: '+esc(f.artist)+')':' (required)'}"
+          title="${f.status==='ready'?'Leave blank to auto-detect':'Tags could not determine an artist - set one to publish'}"
+          style="width:150px;font-size:11px;padding:3px 6px" onclick="event.stopPropagation()"
+          onchange="onIncomingArtistChange(this)">
+        <input type="text" class="incoming-album" data-file="${esc(f.name)}" list="incoming-album-dl-${i}"
+          placeholder="Album${f.status==='ready'?' (auto: '+esc(f.album)+')':''}" title="Leave blank to auto-detect"
+          style="width:150px;font-size:11px;padding:3px 6px" onclick="event.stopPropagation()">
+        <datalist id="incoming-album-dl-${i}"></datalist>
         <button class="btn xs secondary" onclick="deleteIncoming('${encodeURIComponent(f.name)}')">×</button>
       </div>`).join('');
   } catch(e) {
@@ -1283,15 +1384,22 @@ async function deleteIncoming(encodedName) {
   loadIncoming();
 }
 
-async function publishIncoming(bypass) {
-  const names=[...document.querySelectorAll('.incoming-check:checked')].map(x=>x.value);
-  if(!names.length){setSt('st-upload','error','Select at least one staged file');return;}
-  const button=document.getElementById(bypass?'bypass-btn':'publish-btn');
+async function publishIncoming() {
+  const names=_stagedNames;
+  if(!names.length){setSt('st-upload','error','No staged files');return;}
+  const overrides={};
+  document.querySelectorAll('.incoming-artist').forEach(input=>{
+    const file=input.dataset.file;
+    const artist=input.value.trim();
+    const album=(document.querySelector(`.incoming-album[data-file="${CSS.escape(file)}"]`)?.value||'').trim();
+    if(artist||album) overrides[file]={artist,album};
+  });
+  const button=document.getElementById('publish-btn');
   button.disabled=true;
   try {
     const r=await fetch('api/incoming/publish',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({names,bypass})
+      body:JSON.stringify({names,overrides})
     });
     const data=await r.json();
     if(!r.ok)throw new Error(data.error||'Publish failed');
@@ -1317,9 +1425,26 @@ async function doRescan() {
   ['rescan-btn','hdr-rescan'].forEach(id=>{const b=document.getElementById(id);if(b)b.disabled=false;});
 }
 
+// ── YouTube access status ─────────────────────────────────────────────────
+async function checkYoutubeStatus(force = false) {
+  try {
+    const r = await fetch('api/youtube-status' + (force ? '?force=1' : ''));
+    const data = await r.json();
+    const banner = document.getElementById('youtube-status-banner');
+    if (data.ok) {
+      banner.style.display = 'none';
+    } else {
+      document.getElementById('youtube-status-text').textContent = data.error || 'YouTube is unreachable';
+      banner.style.display = '';
+    }
+  } catch (e) { /* transient fetch failure - don't flip the banner on it */ }
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────
 loadJobs();
 setInterval(loadJobs,5000);
+checkYoutubeStatus();
+setInterval(checkYoutubeStatus, 5 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -10,14 +10,14 @@ except ImportError:
     print("ERROR: mutagen not installed. Run: pip install mutagen")
     sys.exit(1)
 
-from common import AUDIO_EXTENSIONS, EXCLUDE_DIRS, is_excluded, _FORMAT_PRIORITY
+from common import AUDIO_EXTENSIONS, EXCLUDE_DIRS, is_excluded, is_playlist_folder, _FORMAT_PRIORITY
 from encoding import check_encoding
 from tags import get_tag_values, get_tags, set_tag, _frame_text
 from checks import (
     check_bad_chars, check_watermarks, check_id3_junk_frames,
     check_spam_covers, check_flac_junk_tags, check_title_artist_prefix,
-    check_artists, artist_from_path, artist_from_filename,
-    strip_watermarks, strip_bad_chars, _UNKNOWN_ARTIST,
+    check_artists, artist_from_path, artist_from_filename, artist_from_trailing_parens,
+    clean_artist_string, strip_watermarks, strip_bad_chars, _is_name_fragment, _UNKNOWN_ARTIST,
 )
 from album import clean_album_dirname
 
@@ -139,17 +139,44 @@ def process_file(
     if check_art:
         artist_val = tags.get("artist", "")
         if not artist_val or artist_val.strip().lower() in _UNKNOWN_ARTIST:
-            guessed = artist_from_path(path) or artist_from_filename(path.stem)
-            if guessed:
+            if is_playlist_folder(path.parent):
+                # The folder name is the series/collection, not a performer -
+                # artist_from_path() would just return that. These filenames
+                # credit the performer in trailing parens instead of a
+                # leading "Artist - " prefix, so artist_from_filename() would
+                # grab the wrong thing too (e.g. an episode/season label).
+                guessed = artist_from_trailing_parens(path.stem)
+                source = "filename" if guessed else ""
+            else:
+                guessed = artist_from_path(path) or artist_from_filename(path.stem)
                 source = "path" if artist_from_path(path) else "filename"
+            if guessed:
                 issues.append(f"unknown artist → '{guessed}' (from {source})")
                 tags["artist"] = guessed
                 if fix:
                     set_tag(f, "artist", guessed)
                     applied.append(f"set artist to '{guessed}'")
 
-        split = check_artists(tags)
         stored_artist_values = get_tag_values(f, "artist")
+        cleaned_stored = [
+            clean_artist_string(v) for v in stored_artist_values if _is_name_fragment(v)
+        ]
+        if cleaned_stored != stored_artist_values and cleaned_stored:
+            # A punctuation-only fragment (e.g. a stray "." left behind when
+            # an artist's own stylized name ends in a period) surviving in
+            # the artist tag - either as its own value in a multi-value frame,
+            # or baked into one value as "Real Name; ." - otherwise
+            # re-manufactures itself on every pass: get_tags() joins it back
+            # in with "; ", which then re-splits right back into the same
+            # junk fragment below.
+            issues.append(f"junk artist fragment: {stored_artist_values} → {cleaned_stored}")
+            if fix:
+                set_tag(f, "artist", cleaned_stored if len(cleaned_stored) > 1 else cleaned_stored[0])
+                applied.append("removed junk artist fragment(s)")
+                tags["artist"] = "; ".join(cleaned_stored)
+                stored_artist_values = cleaned_stored
+
+        split = check_artists(tags)
         canonical_artist = "; ".join(split) if split else ""
         artist_storage_is_canonical = (
             stored_artist_values == split or
@@ -204,6 +231,9 @@ def process_file(
         excluded_dir = next((p for p in path.parts if p in EXCLUDE_DIRS), None)
         if excluded_dir:
             correct_album = excluded_dir
+            correct_albumartist = None
+        elif is_playlist_folder(path.parent):
+            correct_album = clean_album_dirname(strip_watermarks(strip_bad_chars(path.parent.name)))
             correct_albumartist = None
         elif library_root is not None:
             try:

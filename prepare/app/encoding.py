@@ -1,5 +1,3 @@
-import re as _re
-
 MOJIBAKE_THRESHOLD = 0.9
 
 def looks_like_mojibake(s: str) -> bool:

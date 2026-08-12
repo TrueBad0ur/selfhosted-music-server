@@ -3,7 +3,7 @@ import re as _re
 from pathlib import Path
 from mutagen import File as MutagenFile
 
-from common import AUDIO_EXTENSIONS, audio_content_hash, is_excluded
+from common import AUDIO_EXTENSIONS, audio_content_hash, is_excluded, is_playlist_folder
 from tags import _extract_year, _set_year, _raw_date, get_tags
 
 _YEAR_DIR_PREFIX_RE = _re.compile(
@@ -63,7 +63,7 @@ def scan_album_years(root: Path, fix: bool) -> int:
 
     for dirpath, _, filenames in os.walk(root):
         p = Path(dirpath)
-        if is_excluded(p):
+        if is_excluded(p) or is_playlist_folder(p):
             continue
         audio_paths: list[Path] = [
             p / fn for fn in filenames

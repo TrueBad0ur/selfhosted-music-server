@@ -8,7 +8,14 @@ services:
       MUSIC_DIR: /music
       NAVIDROME_URL: http://10.10.10.73:4533
       NAVIDROME_DB_PATH: /navidrome_data/navidrome.db
+      YTDLP_COOKIES_FILE: /run/secrets/youtube-cookies.txt
     volumes:
       - ${MUSIC_DIR}:/music
       - ${INCOMING_DIR:-../application/incoming}:/incoming
       - ../application/data:/navidrome_data
+      # Optional: export cookies.txt from a logged-in YouTube session (e.g. via
+      # the "Get cookies.txt LOCALLY" browser extension) to this path to let
+      # yt-dlp pass YouTube's "Sign in to confirm you're not a bot" check.
+      # If the file doesn't exist, Docker mounts an empty dir here instead and
+      # download_music.py silently skips --cookies, same as today.
+      - ${YTDLP_COOKIES_HOST_PATH:-../application/youtube-cookies.txt}:/run/secrets/youtube-cookies.txt:ro

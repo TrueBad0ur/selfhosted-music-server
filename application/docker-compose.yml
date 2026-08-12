@@ -81,6 +81,8 @@ services:
       - ./incoming:/incoming
       - ../prepare/app:/prepare_app:ro
       - ./data:/navidrome_data
+      # See prepare/docker-compose.yml for what this is.
+      - ${YTDLP_COOKIES_HOST_PATH:-./youtube-cookies.txt}:/run/secrets/youtube-cookies.txt:ro
     environment:
       MUSIC_DIR: /music
       INCOMING_DIR: /incoming
@@ -91,6 +93,7 @@ services:
       NAVIDROME_PASSWORD: "${NAVIDROME_PASSWORD}"
       NAVIDROME_DB_PATH: /navidrome_data/navidrome.db
       MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-2147483648}"
+      YTDLP_COOKIES_FILE: /run/secrets/youtube-cookies.txt
     depends_on:
       - navidrome
 

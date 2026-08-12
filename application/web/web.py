@@ -17,26 +17,23 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from flask import Flask, jsonify, redirect, request, send_from_directory
-from werkzeug.utils import secure_filename
 
 PREPARE_APP = os.environ.get("PREPARE_APP", "/prepare_app")
 if PREPARE_APP not in sys.path:
     sys.path.insert(0, PREPARE_APP)
 
 from common import AUDIO_EXTENSIONS, KEEP_REMIXES_MARKER, is_excluded, keeps_remixes, safe_component as _safe_component
-from download_music import find_track_sources
+from download_music import check_youtube_access, find_track_sources
 from intake import IntakeError, inspect_file, list_incoming, publish_incoming, resolve_incoming
 from metadata import (
     JUNK_ALBUM_RE,
     SINGLE_EP_RE,
-    album_info,
     artist_album_entries,
     artist_search,
     best_cover_url,
     deezer_artist_image,
     extract_title_from_stem,
     find_named_dir,
-    popular_album_entries,
     slug,
     title_on_disk,
     title_variants,
@@ -61,6 +58,8 @@ _analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="music
 _library_cache: dict = {"data": None, "ts": 0}
 _analysis_store: dict[str, dict] = {}
 _CACHE_TTL = 60
+_youtube_status_cache: dict = {"ok": True, "error": "", "ts": 0}
+_YOUTUBE_STATUS_TTL = 300
 
 
 @app.before_request
@@ -187,8 +186,8 @@ def _run_prepare(job_id: str, flags: list[str]):
     ])
 
 
-def _run_intake(job_id: str, names: list[str] | None, bypass: bool):
-    results = publish_incoming(INCOMING_DIR, MUSIC_DIR, names=names, bypass=bypass)
+def _run_intake(job_id: str, names: list[str] | None, overrides: dict | None = None):
+    results = publish_incoming(INCOMING_DIR, MUSIC_DIR, names=names, overrides=overrides)
     for result in results:
         _append(job_id, json.dumps(result, ensure_ascii=False))
     ok = bool(results) and not any(item["status"] == "error" for item in results)
@@ -280,11 +279,14 @@ def _build_library() -> list:
                 path.is_file() and path.suffix.casefold() in AUDIO_EXTENSIONS
                 for path in album_dir.iterdir()
             )
-            if tracks:
-                albums.append({
-                    "name": album_dir.name, "tracks": tracks,
-                    "keep_remixes": keeps_remixes(album_dir),
-                })
+            # Kept even at 0 tracks - deleting an album's tracks while
+            # leaving the (now empty) folder in place is how the Library
+            # "delete album" action works, precisely so the folder is still
+            # here to pick as an Upload destination afterward.
+            albums.append({
+                "name": album_dir.name, "tracks": tracks,
+                "keep_remixes": keeps_remixes(album_dir),
+            })
         if albums:
             artists.append({
                 "name": artist_dir.name,
@@ -340,6 +342,24 @@ def index():
 @app.route("/tools/api/health")
 def health():
     return jsonify({"status": "ok", "music_dir": MUSIC_DIR.is_dir(), "incoming_dir": INCOMING_DIR.is_dir()})
+
+
+def _youtube_status(force: bool = False) -> dict:
+    now = time.time()
+    if not force and now - _youtube_status_cache["ts"] < _YOUTUBE_STATUS_TTL:
+        return {"ok": _youtube_status_cache["ok"], "error": _youtube_status_cache["error"]}
+    ok, error = check_youtube_access()
+    _youtube_status_cache.update(ok=ok, error=error, ts=now)
+    return {"ok": ok, "error": error}
+
+
+@app.route("/tools/api/youtube-status")
+def youtube_status():
+    # A stale IP block otherwise only shows up as a run of oddly-sourced
+    # tracks in job logs - ?force=1 lets the UI re-check right after a
+    # download job ends in error, instead of waiting out the cache TTL.
+    force = request.args.get("force") == "1"
+    return jsonify(_youtube_status(force=force))
 
 
 @app.route("/tools/api/search/artists")
@@ -513,6 +533,48 @@ def track_replace():
     })
 
 
+@app.route("/tools/api/library/delete-track", methods=["POST"])
+def delete_track():
+    body = request.get_json(silent=True) or {}
+    artist = str(body.get("artist", "")).strip()
+    album = str(body.get("album", "")).strip()
+    title = str(body.get("title", "")).strip()
+    if not artist or not album or not title:
+        return jsonify({"error": "artist, album and title required"}), 400
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
+    album_dir = find_named_dir(artist_dir, album) if artist_dir else None
+    track_path = _find_track_file(album_dir, title) if album_dir else None
+    if not track_path:
+        return jsonify({"error": "track not found on disk"}), 404
+    track_path.unlink()
+    _invalidate_library()
+    ok, message = trigger_navidrome_rescan("music-web-delete")
+    return jsonify({"deleted": True, "rescan": message})
+
+
+@app.route("/tools/api/library/delete-album", methods=["POST"])
+def delete_album():
+    body = request.get_json(silent=True) or {}
+    artist = str(body.get("artist", "")).strip()
+    album = str(body.get("album", "")).strip()
+    if not artist or not album:
+        return jsonify({"error": "artist and album required"}), 400
+    artist_dir = find_named_dir(MUSIC_DIR, artist, fuzzy=True)
+    album_dir = find_named_dir(artist_dir, album) if artist_dir else None
+    if not album_dir or not album_dir.is_dir():
+        return jsonify({"error": "album not found on disk"}), 404
+    # The folder is deliberately kept (even empty) rather than removed - so
+    # it's still there to pick as an Upload destination for a replacement.
+    deleted = 0
+    for item in sorted(album_dir.iterdir()):
+        if item.is_file():
+            item.unlink()
+            deleted += 1
+    _invalidate_library()
+    ok, message = trigger_navidrome_rescan("music-web-delete")
+    return jsonify({"deleted_files": deleted, "rescan": message})
+
+
 @app.route("/tools/api/download", methods=["POST"])
 def download():
     body = request.get_json(silent=True) or {}
@@ -661,7 +723,12 @@ def upload():
         if not original or suffix not in AUDIO_EXTENSIONS:
             staged.append({"name": original, "status": "error", "error": "unsupported extension"})
             continue
-        filename = secure_filename(original) or f"upload-{uuid.uuid4().hex}{suffix}"
+        # werkzeug's secure_filename() strips all non-ASCII characters, which
+        # silently destroys most real-world filenames on a library this
+        # Cyrillic-heavy - a name like "Название - site.com.mp3" comes out
+        # as just "-_site.com.mp3", with the actual title gone. safe_component()
+        # only strips path separators/control characters, keeping Unicode intact.
+        filename = _safe_component(original, f"upload-{uuid.uuid4().hex}{suffix}")
         filename = f"{Path(filename).stem}{suffix}"
         destination = INCOMING_DIR / filename
         if destination.exists():
@@ -693,9 +760,11 @@ def publish_staged():
         not isinstance(names, list) or not all(isinstance(name, str) for name in names)
     ):
         return jsonify({"error": "names must be a list of filenames"}), 400
-    bypass = bool(body.get("bypass", False))
-    label = "Publish staged uploads" + (" (bypass)" if bypass else "")
-    return jsonify({"job_id": _submit(label, _run_intake, names, bypass), "label": label})
+    overrides = body.get("overrides")
+    if overrides is not None and not isinstance(overrides, dict):
+        return jsonify({"error": "overrides must be a {filename: {artist, album}} object"}), 400
+    label = "Publish staged uploads"
+    return jsonify({"job_id": _submit(label, _run_intake, names, overrides), "label": label})
 
 
 @app.route("/tools/api/incoming/<path:name>", methods=["GET", "DELETE"])

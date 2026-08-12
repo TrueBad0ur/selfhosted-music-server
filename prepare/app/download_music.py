@@ -37,6 +37,18 @@ from process_file import process_file
 from tags import set_tag
 
 AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
+
+# Set YTDLP_COOKIES_FILE to a cookies.txt (Netscape format, exported from a
+# logged-in browser session via an extension like "Get cookies.txt LOCALLY")
+# to let yt-dlp pass YouTube's "Sign in to confirm you're not a bot" check,
+# which a plain server IP hits occasionally with no way to retry past it.
+_YTDLP_COOKIES_FILE = os.environ.get("YTDLP_COOKIES_FILE", "")
+
+
+def _ytdlp_cookies_args() -> list[str]:
+    if _YTDLP_COOKIES_FILE and os.path.isfile(_YTDLP_COOKIES_FILE):
+        return ["--cookies", _YTDLP_COOKIES_FILE]
+    return []
 _TITLE_MATCH_NOISE_RE = re.compile(
     r"\((?:feat(?:uring)?|ft\.?|official|remaster(?:ed)?|"
     r"lyric(?:\s+video)?|audio|visualizer|cover\w*|кавер\w*)[^)]*\)",
@@ -109,7 +121,6 @@ def _youtube_candidate_score(
     candidate_title = str(candidate.get("title") or "")
     wanted = _title_match_key(title)
     found = _title_match_key(candidate_title)
-    artist_key = slug(artist)
     artist_keys = title_variants(artist)
     # alt_artist covers the resolved catalog name being in a different script
     # than the artist's real channel name (kanji vs romaji).
@@ -226,11 +237,39 @@ def _youtube_candidate_score(
     return score
 
 
+_YOUTUBE_BOT_CHECK_RE = re.compile(r"sign in to confirm you.{0,3}re not a bot", re.IGNORECASE)
+
+
+def check_youtube_access() -> tuple[bool, str]:
+    """Lightweight probe for YouTube's anti-bot IP block. When the server's
+    outbound VPN/proxy dies (or its current exit IP just gets flagged), every
+    YouTube fetch starts failing with this same error and downloads silently
+    fall back to lower-quality/less-reliable sources - this lets the web UI
+    surface the root cause directly instead of the user noticing only via a
+    string of oddly-sourced tracks."""
+    command = [
+        "yt-dlp", "ytsearch1:test", "--dump-json", "--no-warnings",
+        "--extractor-args", "youtube:player_client=android,web", *_ytdlp_cookies_args(),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return False, "timed out reaching YouTube"
+    except FileNotFoundError:
+        return False, "yt-dlp is not installed"
+    if result.returncode == 0:
+        return True, ""
+    stderr = (result.stderr or "").strip()
+    if _YOUTUBE_BOT_CHECK_RE.search(stderr):
+        return False, "YouTube bot-check is blocking this server's IP - VPN/proxy is likely down or needs to be switched"
+    return False, stderr[:300] or "unknown error"
+
+
 def _youtube_candidate_details(video_id: str) -> dict:
     command = [
         "yt-dlp", "-J", f"https://www.youtube.com/watch?v={video_id}",
         "--no-playlist", "--extractor-args", "youtube:player_client=android,web",
-        "--quiet", "--no-warnings",
+        "--quiet", "--no-warnings", *_ytdlp_cookies_args(),
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=60)
@@ -262,7 +301,7 @@ def _youtube_candidates(
             "yt-dlp", f"ytsearch10:{query}",
             "--dump-single-json", "--flat-playlist",
             "--extractor-args", "youtube:player_client=android,web",
-            "--quiet", "--no-warnings",
+            "--quiet", "--no-warnings", *_ytdlp_cookies_args(),
         ]
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=45)
@@ -394,7 +433,7 @@ def _youtube_music_candidates(
     command = [
         "yt-dlp", search_url, "--dump-single-json", "--flat-playlist",
         "--playlist-end", "20", "--quiet", "--no-warnings",
-        "--extractor-args", "youtube:player_client=android,web",
+        "--extractor-args", "youtube:player_client=android,web", *_ytdlp_cookies_args(),
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=45)
@@ -572,6 +611,13 @@ def _audio_decodes(path: Path) -> bool:
         return False
 
 
+_TRANSIENT_NETWORK_RE = re.compile(
+    r"handshake|timed?[\s_-]?out|connection reset|temporary failure|"
+    r"ETIMEDOUT|EOF occurred|connection refused|network is unreachable",
+    re.IGNORECASE,
+)
+
+
 def _fetch_candidate(
     candidate: dict, destination: Path, expected_duration: float | None = None, relaxed: bool = False,
 ) -> tuple[bool, str, bool]:
@@ -580,33 +626,47 @@ def _fetch_candidate(
     (success, last_error, duration_only_mismatch) - the latter tells the
     caller a relaxed-tolerance retry might still be worth it."""
     last_error = ""
-    duration_only_mismatch = False
     with tempfile.TemporaryDirectory(prefix=".download-", dir=destination.parent) as temp_name:
         temp_dir = Path(temp_name)
         if candidate.get("_direct_audio"):
             downloaded = temp_dir / f"{candidate.get('id') or 'track'}.mp3"
-            try:
-                request = urllib.request.Request(
-                    candidate["_download_url"],
-                    headers=candidate.get("_headers") or {
-                        "User-Agent": "Mozilla/5.0", "Referer": "https://zaycev.net/",
-                    },
-                )
-                with urllib.request.urlopen(request, timeout=45) as response, downloaded.open("wb") as output:
-                    remaining = int(response.headers.get("Content-Length") or 0)
-                    while True:
-                        chunk_size = min(1024 * 1024, remaining) if remaining else 1024 * 1024
-                        chunk = response.read(chunk_size)
-                        if not chunk:
-                            break
-                        output.write(chunk)
-                        if remaining:
-                            remaining -= len(chunk)
-                            if remaining <= 0:
+            fetch_error = ""
+            for attempt in range(2):
+                fetch_error = ""
+                try:
+                    request = urllib.request.Request(
+                        candidate["_download_url"],
+                        headers=candidate.get("_headers") or {
+                            "User-Agent": "Mozilla/5.0", "Referer": "https://zaycev.net/",
+                        },
+                    )
+                    with urllib.request.urlopen(request, timeout=45) as response, downloaded.open("wb") as output:
+                        remaining = int(response.headers.get("Content-Length") or 0)
+                        while True:
+                            chunk_size = min(1024 * 1024, remaining) if remaining else 1024 * 1024
+                            chunk = response.read(chunk_size)
+                            if not chunk:
                                 break
-                result = subprocess.CompletedProcess([], 0, "", "")
-            except Exception as exc:
-                return False, str(exc), False
+                            output.write(chunk)
+                            if remaining:
+                                remaining -= len(chunk)
+                                if remaining <= 0:
+                                    break
+                    break
+                except Exception as exc:
+                    fetch_error = str(exc)
+                    # A one-off TLS/timeout blip is common enough (and cheap
+                    # enough to retry) that treating it as a hard failure on
+                    # the first attempt would otherwise waste every other
+                    # already-downloaded track in the batch (--allow-partial
+                    # aside) over what a single retry usually clears up.
+                    if attempt == 0 and _TRANSIENT_NETWORK_RE.search(fetch_error):
+                        time.sleep(2)
+                        continue
+                    break
+            if fetch_error:
+                return False, fetch_error, False
+            result = subprocess.CompletedProcess([], 0, "", "")
         else:
             command = [
                 "yt-dlp", candidate["_download_url"],
@@ -614,16 +674,23 @@ def _fetch_candidate(
                 "--output", str(temp_dir / "%(id)s.%(ext)s"),
                 "--add-metadata", "--no-playlist", "--no-cache-dir",
                 "--extractor-args", "youtube:player_client=android,web",
-                "--quiet", "--no-warnings",
+                "--quiet", "--no-warnings", *_ytdlp_cookies_args(),
             ]
             if not expected_duration:
                 command.extend(["--match-filter", "duration < 600"])
-            try:
-                result = subprocess.run(command, capture_output=True, text=True, timeout=180)
-            except subprocess.TimeoutExpired:
-                return False, "timeout", False
-            except FileNotFoundError:
-                return False, "yt-dlp is not installed", False
+            for attempt in range(2):
+                try:
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=180)
+                except subprocess.TimeoutExpired:
+                    if attempt == 0:
+                        time.sleep(2)
+                        continue
+                    return False, "timeout", False
+                except FileNotFoundError:
+                    return False, "yt-dlp is not installed", False
+                if result.returncode == 0 or attempt == 1 or not _TRANSIENT_NETWORK_RE.search(result.stderr or ""):
+                    break
+                time.sleep(2)
 
         downloaded = _best_downloaded_mp3(temp_dir)
         if result.returncode != 0 or downloaded is None:
@@ -811,14 +878,17 @@ def download_replacement(artist: str, title: str, destination: Path, source: str
         return False
 
     old_tags = _read_replaceable_tags(destination)
-    candidate = {
-        "_download_url": source_url,
-        "_source": source or "unknown",
-        "_direct_audio": source in _DIRECT_AUDIO_HEADERS,
-        "title": old_tags.get("title") or title,
-    }
-    if candidate["_direct_audio"]:
-        candidate["_headers"] = _DIRECT_AUDIO_HEADERS[source]
+
+    def _build_candidate(src: str, url: str, fallback_title: str = "") -> dict:
+        built = {
+            "_download_url": url,
+            "_source": src or "unknown",
+            "_direct_audio": src in _DIRECT_AUDIO_HEADERS,
+            "title": fallback_title or old_tags.get("title") or title,
+        }
+        if built["_direct_audio"]:
+            built["_headers"] = _DIRECT_AUDIO_HEADERS.get(src, {"User-Agent": "Mozilla/5.0"})
+        return built
 
     backup = destination.with_name(destination.name + ".replace-bak")
     destination.replace(backup)
@@ -828,7 +898,23 @@ def download_replacement(artist: str, title: str, destination: Path, source: str
             float(old_media.info.length)
             if old_media is not None and old_media.info is not None else None
         )
-        ok, last_error, _ = _fetch_candidate(candidate, destination, expected_duration, relaxed=True)
+        primary = _build_candidate(source, source_url)
+        ok, last_error, _ = _fetch_candidate(primary, destination, expected_duration, relaxed=True)
+        if not ok:
+            # The one source the caller picked can fail for reasons a retry
+            # of the same URL can't fix (YouTube's anti-bot block, a dead
+            # link) - falling back to the next-best alternative beats making
+            # the user manually reopen the source picker and try again.
+            print(f"  [WARN] {source} failed ({last_error}); trying other sources")
+            for alt in find_track_sources(artist, title, old_tags.get("album") or "", expected_duration):
+                if alt["source"] == source and alt["url"] == source_url:
+                    continue
+                candidate = _build_candidate(alt["source"], alt["url"], alt.get("title", ""))
+                ok, last_error, _ = _fetch_candidate(candidate, destination, expected_duration, relaxed=True)
+                if ok:
+                    label = alt.get("channel") or alt.get("title") or alt["url"]
+                    print(f"  [✓] fell back to {alt['source']}: {label}")
+                    break
         if not ok:
             print(f"  [ERROR] {last_error}")
             backup.replace(destination)

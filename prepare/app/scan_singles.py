@@ -40,7 +40,6 @@ def scan_singles(root: Path, fix: bool, lastfm_key: str) -> int:
         for fn in sorted(audio_files):
             fpath  = p / fn
             stem   = Path(fn).stem
-            ext    = Path(fn).suffix
             title = stem.split(' - ', 1)[1] if ' - ' in stem else stem
             title = _re.sub(r'^\d+[\s.\-]+', '', title).strip()
             lfm_name = _lastfm_track_name(artist, title, lastfm_key)

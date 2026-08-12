@@ -233,7 +233,7 @@ def _intake_command(args, root: Path) -> int:
         print(f"Incoming: {len(entries)} file(s); use --fix to publish")
         return 1 if any(entry["status"] == "error" for entry in entries) else 0
 
-    results = publish_incoming(incoming, root, names=args.name or None, bypass=args.bypass)
+    results = publish_incoming(incoming, root, names=args.name or None)
     for result in results:
         if result["status"] == "error":
             print(f"[ERROR] {result['name']}: {result['error']}")
@@ -278,7 +278,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-albums", metavar="ARTIST")
     parser.add_argument("--ingest", metavar="DIR", help="Inspect/publish staged uploads")
     parser.add_argument("--name", action="append", help="Publish only this staged filename")
-    parser.add_argument("--bypass", action="store_true", help="Publish staged files unchanged to All/All")
     return parser
 
 

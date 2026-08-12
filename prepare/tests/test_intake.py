@@ -56,14 +56,6 @@ class IntakeIntegrationTests(unittest.TestCase):
         self.assertEqual(tags["albumartist"], ["Alpha"])
         self.assertEqual(tags["album"], ["Demo Album"])
 
-    def test_bypass_preserves_file_and_routes_to_excluded_folder(self):
-        source = self._audio("raw.mp3")
-        original = source.read_bytes()
-        results = publish_incoming(self.incoming, self.music, bypass=True)
-        destination = self.music / results[0]["destination"]
-        self.assertEqual(destination.parts[-3:-1], ("All", "All"))
-        self.assertEqual(destination.read_bytes(), original)
-
     def test_duplicate_is_not_copied_twice(self):
         first = self._audio("one.mp3")
         duplicate = self.incoming / "two.mp3"
@@ -91,6 +83,30 @@ class IntakeIntegrationTests(unittest.TestCase):
         tags = EasyID3(destination)
         self.assertEqual(tags["artist"], ["Alpha", "Beta"])
         self.assertEqual(tags["album"], ["Track"])
+
+    def test_override_routes_to_explicit_artist_and_album(self):
+        self._audio()
+        results = publish_incoming(
+            self.incoming, self.music,
+            overrides={"source.mp3": {"artist": "Gamma", "album": "Studio Version"}},
+        )
+        self.assertEqual(results[0]["status"], "published")
+        destination = self.music / results[0]["destination"]
+        self.assertEqual(destination.parts[-3:-1], ("Gamma", "Studio Version"))
+        tags = EasyID3(destination)
+        self.assertEqual(tags["albumartist"], ["Gamma"])
+        self.assertEqual(tags["album"], ["Studio Version"])
+
+    def test_override_files_into_an_existing_album_folder_not_a_duplicate(self):
+        existing = self.music / "Gamma" / "Studio Version"
+        existing.mkdir(parents=True)
+        self._audio()
+        results = publish_incoming(
+            self.incoming, self.music,
+            overrides={"source.mp3": {"artist": "gamma", "album": "studio version"}},
+        )
+        destination = self.music / results[0]["destination"]
+        self.assertEqual(destination.parent, existing)
 
 
 if __name__ == "__main__":

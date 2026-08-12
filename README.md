@@ -70,11 +70,12 @@ cd application
 ./start.sh
 ```
 
-| Service | Port |
-|---|---|
-| Navidrome | 4533 |
-| AudioMuse-AI | 8000 |
-| Uploader | 8091 |
+| Service | Port | Notes |
+|---|---|---|
+| Navidrome | 4533 | Also reachable directly, bypassing nginx/SSO |
+| AudioMuse-AI | 8000 | |
+| nginx (front proxy) | 8082 | Entry point for `/tools/` Web UI + Google-SSO-gated Navidrome |
+| Web UI (`web`) | — | Internal only, reached as `web:8091` through nginx at `/tools/` |
 
 ### 6. Configure plugin in Navidrome
 
@@ -155,7 +156,7 @@ When Navidrome and AudioMuse-AI run on separate machines.
 
 ### Music machine
 
-Use the same `application/docker-compose.yml` but remove the `audiomuse-flask`, `audiomuse-worker`, `redis`, and `postgres` services — keep only `navidrome` and `uploader`.
+Use the same `application/docker-compose.yml` but remove the `audiomuse-flask`, `audiomuse-worker`, `redis`, and `postgres` services — keep `navidrome`, plus `nginx`/`oauth2-proxy`/`web` if you want the Google-SSO-gated `/tools/` Web UI (see [Web UI](#web-ui--applicationweb) below; drop all three if you don't need it and just want plain Navidrome).
 
 In Navidrome plugin settings, point the AudioMuse-AI URL to the AI machine: `http://<AI_MACHINE_IP>:8000`
 
@@ -164,10 +165,11 @@ In Navidrome plugin settings, point the AudioMuse-AI URL to the AI machine: `htt
 LASTFM_APIKEY=your_key
 LASTFM_SECRET=your_secret
 ```
+Plus the `GOOGLE_OAUTH_*`/`OAUTH2_PROXY_COOKIE_SECRET` vars from `.env.example` if running the Web UI stack.
 
 ### AI machine
 
-Use the same `application/docker-compose.yml` but remove `navidrome` and `uploader` — keep only `audiomuse-flask`, `audiomuse-worker`, `redis`, and `postgres`.
+Use the same `application/docker-compose.yml` but remove `navidrome`, `nginx`, `oauth2-proxy`, and `web` — keep only `audiomuse-flask`, `audiomuse-worker`, `redis`, and `postgres`.
 
 Set `NAVIDROME_URL` to point at the music machine:
 ```env
@@ -323,6 +325,16 @@ docker compose run --rm prepare /music/Artist/Album --unset-keep-remixes
 
 When downloading a new album, pass `--keep-remixes` to `download_music.py` (or check "remixes" in the web UI, both in Search and per-album in Library) to set the marker automatically after publish.
 
+### Playlist-style folders (loose collections of unrelated singles)
+
+A folder directly under the library root with audio files but no album subfolder (`Artist/track.mp3` instead of `Artist/Album/track.mp3`) is normally ambiguous: cleanup can't tell if it's one artist's own release or an unrelated grab-bag of singles (e.g. anime OP/ED themes grouped by series, each track its own artist/year). Place a `.playlist` file inside such a folder to mark it as the latter:
+
+```bash
+touch "/music/SomeCollection/.playlist"
+```
+
+Effects: `album` is forced to the folder name (like the built-in `EXCLUDE_DIRS` playlist folders) but each track's own `artist`/`albumartist` tag is left untouched, and the folder is skipped entirely by year normalization (`scan_album_years` no longer forces every track to share one year). Without this marker, cleanup treats the folder as a malformed 2-level album path and derives `albumartist` from the library root's own directory name instead.
+
 ### Directory structure for album/albumartist detection
 
 ```
@@ -334,7 +346,7 @@ music/
 └── Singles/             ← tracks with no identified album
 ```
 
-Tracks in playlist folders get `album` forced to the folder name to avoid polluting real albums. To add more playlist folders edit `EXCLUDE_DIRS` in `prepare_music.py`.
+Tracks in playlist folders get `album` forced to the folder name to avoid polluting real albums. To add more playlist folders edit `EXCLUDE_DIRS` in `prepare/app/common.py`.
 
 ---
 

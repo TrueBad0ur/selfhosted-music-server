@@ -350,5 +350,22 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual(len(frames), 1)
             self.assertEqual(frames[0].data, cover)
 
+    def test_youtube_access_detects_bot_check(self):
+        blocked = MagicMock(
+            returncode=1,
+            stderr="ERROR: [youtube] xyz: Sign in to confirm you're not a bot. Use --cookies...",
+        )
+        with patch("download_music.subprocess.run", return_value=blocked):
+            ok, error = download_music.check_youtube_access()
+        self.assertFalse(ok)
+        self.assertIn("VPN", error)
+
+    def test_youtube_access_ok_on_success(self):
+        with patch("download_music.subprocess.run", return_value=MagicMock(returncode=0, stderr="")):
+            ok, error = download_music.check_youtube_access()
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+
+
 if __name__ == "__main__":
     unittest.main()

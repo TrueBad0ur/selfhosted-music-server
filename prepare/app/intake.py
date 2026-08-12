@@ -30,7 +30,6 @@ from metadata import (
 from process_file import process_file
 from tags import get_tags, set_tag, _set_year
 
-BYPASS_RELATIVE_DIR = Path("All") / "All"
 _SOURCE_FILENAME_ALBUM_RE = re.compile(r"_-_|_\d{5,}$|_$")
 
 
@@ -95,8 +94,14 @@ def _unique_destination(directory: Path, filename: str, source: Path) -> tuple[P
         index += 1
 
 
-def inspect_file(path: Path) -> dict:
+def inspect_file(path: Path, artist_hint: str = "", album_hint: str = "") -> dict:
+    """artist_hint/album_hint let a caller (the web upload UI) override the
+    tag/filename-derived guess outright - e.g. when the file is a version
+    (live, remix) whose own tags don't reflect where the user actually wants
+    it filed, or a hard-to-find original the user tracked down themselves."""
     path = Path(path)
+    artist_hint = artist_hint.strip()
+    album_hint = album_hint.strip()
     if path.suffix.casefold() not in AUDIO_EXTENSIONS:
         raise IntakeError(f"unsupported extension: {path.suffix or '<none>'}")
     try:
@@ -110,20 +115,23 @@ def inspect_file(path: Path) -> dict:
     raw_artist = str(tags.get("artist", "")).strip()
     album_artist = str(tags.get("albumartist", "")).strip()
     split_artists = check_artists({"artist": raw_artist})
-    primary = album_artist or (split_artists[0] if split_artists else raw_artist)
+    primary = artist_hint or album_artist or (split_artists[0] if split_artists else raw_artist)
     if not primary or primary.casefold() in _UNKNOWN_ARTIST:
         primary = artist_from_filename(path.stem) or ""
     title = str(tags.get("title", "")).strip() or extract_title_from_stem(path.stem)
-    album = str(tags.get("album", "")).strip() or "Singles"
+    album = album_hint or str(tags.get("album", "")).strip() or "Singles"
 
     if not primary:
         raise IntakeError("artist is missing in tags and filename")
     if not title:
         raise IntakeError("title is missing in tags and filename")
 
-    artists = split_artists or [primary]
+    artists = [artist_hint] if artist_hint else (split_artists or [primary])
     enriched = {}
-    if _needs_enrichment(path, album, title, artists, media):
+    # A user-supplied hint is a deliberate placement choice (e.g. filing a
+    # live/remix version's file under the studio album on purpose) - letting
+    # catalog lookup silently overwrite album/title here would fight that.
+    if not (artist_hint or album_hint) and _needs_enrichment(path, album, title, artists, media):
         duration = float(media.info.length) if getattr(media, "info", None) else None
         enriched = resolve_track_metadata(artists, title, duration)
         if enriched:
@@ -193,24 +201,24 @@ def _copy_atomic(source: Path, destination: Path) -> Path:
     return destination
 
 
-def publish_file(source: Path, music_root: Path, bypass: bool = False) -> dict:
+def publish_file(
+    source: Path, music_root: Path,
+    artist_hint: str = "", album_hint: str = "",
+) -> dict:
     source = Path(source)
     music_root = Path(music_root)
-    if bypass:
-        if source.suffix.casefold() not in AUDIO_EXTENSIONS:
-            raise IntakeError(f"unsupported extension: {source.suffix or '<none>'}")
-        directory = music_root / BYPASS_RELATIVE_DIR
-        filename = safe_component(source.name, f"upload{source.suffix.casefold()}")
-        details = {"artist": "All", "album": "All", "title": source.stem}
-    else:
-        details = inspect_file(source)
-        requested_artist = safe_component(details["artist"], "Unknown Artist")
-        artist_dir = find_named_dir(music_root, requested_artist) or music_root / requested_artist
-        directory = artist_dir / safe_component(details["album"], "Singles")
-        filename = (
-            f"{safe_component(artist_dir.name, 'Unknown Artist')} - "
-            f"{safe_component(details['title'], 'Untitled')}{source.suffix.casefold()}"
-        )
+    details = inspect_file(source, artist_hint=artist_hint, album_hint=album_hint)
+    requested_artist = safe_component(details["artist"], "Unknown Artist")
+    artist_dir = find_named_dir(music_root, requested_artist) or music_root / requested_artist
+    # details["album"] is already a safe single path component - look for
+    # a same-named album folder that already exists under this artist
+    # (e.g. the user picked an existing album from the UI) before
+    # creating a new one.
+    directory = find_named_dir(artist_dir, details["album"]) or (artist_dir / details["album"])
+    filename = (
+        f"{safe_component(artist_dir.name, 'Unknown Artist')} - "
+        f"{safe_component(details['title'], 'Untitled')}{source.suffix.casefold()}"
+    )
 
     destination, duplicate = _unique_destination(directory, filename, source)
     if duplicate:
@@ -219,26 +227,23 @@ def publish_file(source: Path, music_root: Path, bypass: bool = False) -> dict:
             "name": source.name,
             "status": "duplicate",
             "destination": str(destination.relative_to(music_root)),
-            "bypass": bypass,
         }
 
     _copy_atomic(source, destination)
-    if not bypass:
-        if details.get("enriched"):
-            _apply_enriched_tags(destination, details)
-        process_file(destination, True, True, True, True, library_root=music_root)
-        if not destination.exists():
-            matches = list(directory.glob(f"{Path(filename).stem}*{destination.suffix}"))
-            if matches:
-                destination = matches[0]
-        if not destination.exists():
-            raise IntakeError("normalization did not produce a destination file")
+    if details.get("enriched"):
+        _apply_enriched_tags(destination, details)
+    process_file(destination, True, True, True, True, library_root=music_root)
+    if not destination.exists():
+        matches = list(directory.glob(f"{Path(filename).stem}*{destination.suffix}"))
+        if matches:
+            destination = matches[0]
+    if not destination.exists():
+        raise IntakeError("normalization did not produce a destination file")
     source.unlink()
     return {
         "name": source.name,
         "status": "published",
         "destination": str(destination.relative_to(music_root)),
-        "bypass": bypass,
         "artist": details["artist"],
         "album": details["album"],
     }
@@ -248,18 +253,26 @@ def publish_incoming(
     incoming_dir: Path,
     music_root: Path,
     names: list[str] | None = None,
-    bypass: bool = False,
+    overrides: dict[str, dict] | None = None,
 ) -> list[dict]:
+    """overrides: {filename: {"artist": ..., "album": ...}} - lets the web
+    upload UI file a specific staged upload under an explicit artist/album
+    instead of whatever inspect_file() would otherwise guess from its tags."""
     if names is None:
         names = [
             path.name for path in Path(incoming_dir).iterdir()
             if path.is_file() and not path.name.startswith(".")
         ]
+    overrides = overrides or {}
     results = []
     for name in names:
         try:
             source = resolve_incoming(incoming_dir, name)
-            results.append(publish_file(source, music_root, bypass=bypass))
+            hint = overrides.get(name) or {}
+            results.append(publish_file(
+                source, music_root,
+                artist_hint=str(hint.get("artist", "")), album_hint=str(hint.get("album", "")),
+            ))
         except Exception as exc:
-            results.append({"name": name, "status": "error", "error": str(exc), "bypass": bypass})
+            results.append({"name": name, "status": "error", "error": str(exc)})
     return results

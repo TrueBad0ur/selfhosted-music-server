@@ -1,8 +1,6 @@
 import sys
-from pathlib import Path
 
 try:
-    from mutagen import File as MutagenFile
     from mutagen.id3 import TDRC, TRCK, TIT2, TPE1, TPE2, TALB
 except ImportError:
     print("ERROR: mutagen not installed. Run: pip install mutagen")
