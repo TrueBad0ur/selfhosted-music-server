@@ -2,6 +2,7 @@ import hashlib
 import re as _re
 from pathlib import Path
 
+from encoding import looks_like_utf16le_as_be
 from tags import _frame_text
 
 # ── bad chars ─────────────────────────────────────────────────────────────────
@@ -137,7 +138,15 @@ def check_id3_junk_frames(f) -> list:
             continue
         if frame_type == "TCON":
             text = _frame_text(f.tags[key]).strip()
-            if _JUNK_GENRE_RE.match(text):
+            if _JUNK_GENRE_RE.match(text) or looks_like_utf16le_as_be(text):
+                junk.append((key, text))
+            continue
+        if frame_type == "TPUB":
+            # Publisher isn't read/shown anywhere in this pipeline or in
+            # Navidrome - only worth touching when it's visibly garbled
+            # (same UTF-16LE-as-BE mis-decode as TCON), not just for existing.
+            text = _frame_text(f.tags[key]).strip()
+            if looks_like_utf16le_as_be(text):
                 junk.append((key, text))
             continue
         if frame_type == "USLT":
