@@ -1326,6 +1326,12 @@ def _cmd_download_album_locked(args) -> bool:
                 if args.delay:
                     time.sleep(args.delay)
 
+            # Without --allow-partial, a single failure discards the whole
+            # album anyway (see the check right below) - no point downloading
+            # every remaining track first just to throw it all away.
+            if failures and not args.allow_partial:
+                break
+
         if failures and not args.allow_partial:
             print(
                 f"\n[ERROR] album not published; staged files discarded: "
